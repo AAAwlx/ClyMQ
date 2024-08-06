@@ -191,7 +191,7 @@ func (z *ZkServer) CreateTopic(info Info_in) Info_out {
 	tnode := zookeeper.TopicNode{
 		Name: info.topic_name,
 	}
-	err := z.zk.RegisterNode(tnode)
+	err := z.zk.RegisterNode(tnode)//向zookeeper中注册主题的节点
 	return Info_out{
 		Err: err,
 	}

@@ -169,36 +169,45 @@ func NewPart(in info, file *File,  zkclient *zkserver_operations.Client) *Part {
 	return part
 }
 
+// Start 启动分区的处理过程
 func (p *Part) Start(close chan *Part) {
 
-	// open file
-	p.fd = *p.file.OpenFileRead()
-	offset, err := p.file.FindOffset(&p.fd, p.index)
+	// 打开文件进行读取
+	p.fd = *p.file.OpenFileRead() // 获取文件描述符
+	offset, err := p.file.FindOffset(&p.fd, p.index) // 查找文件中的偏移量
 
 	if err != nil {
+		// 如果查找偏移量失败，记录错误日志
 		logger.DEBUG(logger.DError, "%v\n", err.Error())
 	}
 
+	// 设置分区的偏移量
 	p.offset = offset
 
-	for i := 0; i < BUFF_NUM; i++ { //加载 BUFF_NUM个block到队列中
+	// 加载 BUFF_NUM 个 block 到队列中
+	for i := 0; i < BUFF_NUM; i++ {
 		err := p.AddBlock()
 		if err != nil {
+			// 如果添加 block 失败，记录错误日志
 			logger.DEBUG(logger.DError, "%v\n", err.Error())
 		}
 	}
 
+	// 启动 goroutine 处理完成的任务
 	go p.GetDone(close)
 
 	p.mu.Lock()
+	// 检查分区的状态，如果是 DOWN 状态，则将其设置为 ALIVE
 	if p.state == DOWN {
 		p.state = ALIVE
 	} else {
+		// 如果分区已经是 ALIVE 状态，释放锁并记录错误日志
 		p.mu.Unlock()
 		logger.DEBUG(logger.DError, "the part is ALIVE in before this start\n")
 		return
 	}
 
+	// 启动 goroutine 发送 block 到各个客户端
 	for name, cli := range p.clis {
 		go p.SendOneBlock(name, cli)
 	}
@@ -248,43 +257,53 @@ func (p *Part) AddBlock() error {
 //需要修改，设置未可主动关闭模式，使用管道
 func (p *Part) GetDone(close chan *Part) {
 
-	num := 0 //计数，如果达到UPDATANUM则更新zookeeper中的offset
+	num := 0 // 计数器，用于记录已成功处理的消息数量
+
 	for {
 		select {
 		case do := <-p.part_had:
+			// 从 part_had 通道中接收消息处理结果
 
-			if do.err == OK { // 发送成功，buf_do--, buf_done++, 补充buf_do
-
+			if do.err == OK { // 如果处理成功
 				num++
 
+				// 尝试添加新的数据块
 				err := p.AddBlock()
-				p.mu.Lock()
+				p.mu.Lock() // 获取锁以修改状态
+
 				if err != nil {
 					logger.DEBUG(logger.DError, "%v\n", err.Error())
 				}
 
-				//文件消费完成，且文件不是生产者正在写入的文件
+				// 文件消费完成，且该文件不是生产者正在写入的文件
 				if p.file.filename != p.part_name+"NowBlock.txt" && err == errors.New("read All file, do not find this index") {
 					p.state = DOWN
 				}
-				//且缓存中的文件页被消费完后，发送信息到config，关闭该Part；
+
+				// 如果状态为 DOWN 并且缓存中的文件页被消费完后
 				if p.state == DOWN && len(p.buf_done) == 0 {
-					p.mu.Unlock()
-					close <- p
+					p.mu.Unlock() // 释放锁
+					close <- p   // 向关闭通道发送该 Part 对象
 					return
 				}
 
+				// 标记缓冲区中的消息为已处理
 				p.buf_done[do.in] = HADDO
 				in := p.start_index
 
 				for {
+					// 检查缓存中是否有连续的已处理消息
 					if p.buf_done[in] == HADDO {
 						p.start_index = p.buffer_node[in].End_index + 1
+
+						// 更新 Zookeeper 中的 offset
 						(*p.zkclient).UpdatePTPOffset(context.Background(), &api.UpdatePTPOffsetRequest{
 							Topic: p.topic_name,
 							Part: p.part_name,
 							Offset: p.start_index,
 						})
+
+						// 清理已处理的消息
 						delete(p.buf_done, in)
 						delete(p.buffer_msg, in)
 						delete(p.buffer_node, in)
@@ -294,24 +313,22 @@ func (p *Part) GetDone(close chan *Part) {
 					}
 				}
 
+				// 发送处理好的数据块给消费者
 				go p.SendOneBlock(do.name, do.cli)
 
-				p.mu.Unlock()
-
+				p.mu.Unlock() // 释放锁
 			}
-			if do.err == TIOUT { //超时  已尝试发送3次
-				//认为该消费者掉线
+
+			if do.err == TIOUT { // 如果超时（已尝试发送 3 次）
 				p.mu.Lock()
-				delete(p.clis, do.name) //删除该消费者    考虑是否需要
-				//判断是否有消费者存在，若无则关闭协程和文件描述符
+				delete(p.clis, do.name) // 删除超时的消费者
 				p.mu.Unlock()
 			}
 
-		case <-time.After(TOUT * time.Second): //超时
+		case <-time.After(TOUT * time.Second): // 超时处理
 			close <- p
 			return
 		}
-
 	}
 }
 

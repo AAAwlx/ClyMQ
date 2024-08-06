@@ -21,11 +21,11 @@ import (
 type RPCServer struct {
 	// me int64
 	// name 			string
-	srv_cli  *server.Server
-	srv_bro  *server.Server
+	srv_cli  *server.Server//消息队列客户端注对应的rpc服务端
+	srv_bro  *server.Server//节点对应的rpc服务端
 	zkinfo   zookeeper.ZkInfo
 	server   *Server
-	zkserver *ZkServer
+	zkserver *ZkServer//zookeeper的服务器
 }
 
 func NewRpcServer(zkinfo zookeeper.ZkInfo) RPCServer {
@@ -35,43 +35,56 @@ func NewRpcServer(zkinfo zookeeper.ZkInfo) RPCServer {
 	}
 }
 
+//启动一个rpc服务器实例
 func (s *RPCServer) Start(opts_cli, opts_zks, opts_raf []server.Option, opt Options) error {
 
+	// 根据选项的 Tag 判断服务器类型
 	switch opt.Tag {
 	case BROKER:
+		// 如果是消息队列的节点（Broker）
+		// 创建并初始化 Broker 服务器
 		s.server = NewServer(s.zkinfo)
 		s.server.make(opt, opts_raf)
 
+		// 创建客户端服务器实例，并传入相关选项
 		srv_cli_bro := server_operations.NewServer(s, opts_cli...)
 		s.srv_cli = &srv_cli_bro
-		// klog.Info("DLOG1 Broker start rpcserver for clients\n")
+
+		// 启动客户端服务器，并在新的 goroutine 中运行
 		logger.DEBUG(logger.DLog, "%v the raft %v start rpcserver for clients\n", opt.Name, opt.Me)
 		go func() {
 			err := srv_cli_bro.Run()
-
 			if err != nil {
+				// 如果启动过程中出现错误，输出错误信息
 				fmt.Println(err.Error())
 			}
 		}()
 	case ZKBROKER:
+		// 如果是 ZooKeeper 服务器节点
+		// 创建并初始化 ZooKeeper 服务器
 		s.zkserver = NewZKServer(s.zkinfo)
 		s.zkserver.make(opt)
 
+		// 创建 ZooKeeper 服务器实例，并传入相关选项
 		srv_bro_cli := zkserver_operations.NewServer(s, opts_zks...)
 		s.srv_bro = &srv_bro_cli
+
+		// 启动 ZooKeeper 服务器，并在新的 goroutine 中运行
 		logger.DEBUG(logger.DLog, "ZkServer start rpcserver for brokers\n")
 		go func() {
 			err := srv_bro_cli.Run()
-
 			if err != nil {
+				// 如果启动过程中出现错误，输出错误信息
 				fmt.Println(err.Error())
 			}
 		}()
 	}
 
+	// 返回 nil，表示启动过程没有出现致命错误
 	return nil
 }
 
+//关闭服务器
 func (s *RPCServer) ShutDown_server() {
 	if s.srv_bro != nil {
 		(*s.srv_bro).Stop()
@@ -107,19 +120,22 @@ func (s *RPCServer) Push(ctx context.Context, req *api.PushRequest) (resp *api.P
 	}, nil
 }
 
-//producer 获取该向那个broker发送信息
+//producer 获取该向对应broker的信息
 func (s *RPCServer) ProGetBroker(ctx context.Context, req *api.ProGetBrokRequest) (r *api.ProGetBrokResponse, err error) {
+	// 调用 zkserver 的 ProGetBroker 方法获取 Broker 信息
 	info := s.zkserver.ProGetBroker(Info_in{
 		topic_name: req.TopicName,
 		part_name:  req.PartName,
 	})
 
+	// 如果获取 Broker 信息时发生错误，返回错误响应
 	if info.Err != nil {
 		return &api.ProGetBrokResponse{
 			Ret: false,
 		}, info.Err
 	}
 
+	// 返回成功响应，包含 Broker 主机地址信息
 	return &api.ProGetBrokResponse{
 		Ret:            true,
 		BrokerHostPort: info.bro_host_port,
@@ -169,23 +185,27 @@ func (s *RPCServer) CreatePart(ctx context.Context, req *api.CreatePartRequest) 
 
 //producer--->zkserver
 func (s *RPCServer) SetPartitionState(ctx context.Context, req *api.SetPartitionStateRequest) (r *api.SetPartitionStateResponse, err error) {
+	// 调用 ZooKeeper 服务器的 SetPartitionState 方法来设置分区状态
 	info := s.zkserver.SetPartitionState(Info_in{
-		topic_name: req.Topic,
-		part_name:  req.Partition,
-		option:     req.Option,
-		dupnum:     req.Dupnum,
+		topic_name: req.Topic,      // 主题名称
+		part_name:  req.Partition,  // 分区名称
+		option:     req.Option,     // 选项
+		dupnum:     req.Dupnum,     // 重复数
 	})
 
+	// 检查设置操作是否成功
 	if info.Err != nil {
+		// 如果设置失败，返回包含错误信息的响应对象
 		return &api.SetPartitionStateResponse{
-			Ret: false,
-			Err: info.Err.Error(),
+			Ret: false,                // 操作失败
+			Err: info.Err.Error(),    // 错误信息
 		}, info.Err
 	}
 
+	// 如果设置成功，返回成功的响应对象
 	return &api.SetPartitionStateResponse{
-		Ret: true,
-		Err: "ok",
+		Ret: true,                 // 操作成功
+		Err: "ok",                 // 无错误
 	}, nil
 }
 
@@ -202,6 +222,7 @@ func (s *RPCServer) ConInfo(ctx context.Context, req *api.InfoRequest) (resp *ap
 }
 
 //consumer---->broker server
+//消费者接收topic中的消息
 func (s *RPCServer) StarttoGet(ctx context.Context, req *api.InfoGetRequest) (resp *api.InfoGetResponse, err error) {
 	err = s.server.StartGet(info{
 		consumer:   req.CliName,

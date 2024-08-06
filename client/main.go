@@ -21,7 +21,7 @@ func main() {
 	}
 	
 	switch option{
-	case "p":
+	case "p"://生产者
 
 		producer, _ := clients.NewProducer("0.0.0.0:2181", "producer1")
 
@@ -39,10 +39,10 @@ func main() {
 			time.Sleep(5 * time.Second)
 		}
 
-	case "c":	
+	case "c"://消费者
 		consumer,_ := clients.NewConsumer("0.0.0.0:2181", "consumer1", port)
 		//start a server for pub and pinpong
-		go consumer.Start_server()
+		go consumer.Start_server()//消费者需要双向的rpc,
 
 		consumer.Subscription("phone_number", "yclchuxue", 2)
 

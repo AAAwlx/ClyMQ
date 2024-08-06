@@ -157,14 +157,20 @@ func (t *Topic) PrepareSendHandle(in info, zkclient *zkserver_operations.Client)
 }
 
 func (t *Topic) HandleStartToGet(sub_name string, in info, cli *client_operations.Client) (err error) {
+	// 获取读锁，确保在处理订阅时不会被其他线程修改
 	t.rmu.RLock()
 	defer t.rmu.RUnlock()
+
+	// 检查订阅是否存在于主题的订阅列表中
 	sub, ok := t.subList[sub_name]
 	if !ok {
+		// 如果订阅不存在，记录错误并返回
 		ret := "this topic not have this subscription"
 		logger.DEBUG(logger.DError, "%v\n", ret)
 		return errors.New(ret)
 	}
+
+	// 如果订阅存在，将消费者添加到配置中
 	sub.AddConsumerInConfig(in, cli)
 	return nil
 }
@@ -467,29 +473,30 @@ func (p *Partition) AddMessage(in info) (ret string, err error) {
 }
 
 type SubScription struct {
-	rmu        sync.RWMutex
-	name       string
-	topic_name string
+	rmu        sync.RWMutex  // 读写锁，用于保证对订阅相关数据结构的并发安全
+	name       string       // 订阅的名称
+	topic_name string       // 订阅的主题名称
 
-	option int8 //PTP    PSB
+	option int8           // 订阅的选项，表示是 PTP 还是 PSB 订阅模式
 
-	groups []*Group
+	groups []*Group       // 订阅所属的组，可能用于管理不同的消费者组
 
-	partitions map[string]*Partition
-	Files      map[string]*File
+	partitions map[string]*Partition  // 分区映射，存储每个分区及其相关信息
+	Files      map[string]*File       // 文件映射，存储每个文件及其相关信息
 
-	//需要修改，一个订阅需要多个config，因为一个partition有多个文件，一个文件需要一个config
-	//需要修改，分为多种订阅，每种订阅方式一种config
-	PTP_config *Config
+	// 需要修改，一个订阅需要多个配置，因为一个分区可能有多个文件，每个文件需要一个配置
+	// 需要修改，分为多种订阅方式，每种订阅方式一种配置
+	PTP_config *Config  // PTP 模式下的配置
 
-	//partition_name + consumer_name  to config
-	PSB_configs map[string]*PSBConfig_PUSH
+	// partition_name + consumer_name  对应到配置
+	PSB_configs map[string]*PSBConfig_PUSH  // PSB 模式下的配置，映射到每个分区和消费者的配置
 
-	//一个consumer向文件描述符等的映射,每次pull将使用上次的文件描述符等资源
-	//topic+partition+consumer   to  Node
-	nodes map[string]*Node
+	// 一个消费者与文件描述符等的映射，每次拉取时将使用上次的文件描述符等资源
+	// topic+partition+consumer  对应到节点
+	nodes map[string]*Node  // 节点映射，存储每个消费者、主题和分区的节点信息
 }
 
+//创建一个新的订阅配置信息
 func NewSubScription(in info, name string, parts map[string]*Partition, files map[string]*File) *SubScription {
 	sub := &SubScription{
 		rmu:         sync.RWMutex{},
@@ -608,23 +615,25 @@ func (s *SubScription) AddConsumerInGroup(in info) {
 	}
 }
 
-//将config中添加consumer   当consumer StartGet时才调用
+// AddConsumerInConfig 将消费者添加到配置中，并根据传入的选项进行处理。
+// 根据配置选项，方法会将消费者添加到 PTP 配置中或启动 PSB 配置的推送操作。
 func (s *SubScription) AddConsumerInConfig(in info, cli *client_operations.Client) {
 
-	s.rmu.Lock()
-	defer s.rmu.Unlock()
+	s.rmu.Lock() // 获取读写锁，确保对共享资源的安全访问
+	defer s.rmu.Unlock() // 确保在方法结束时释放锁
 
 	switch in.option {
-	case TOPIC_NIL_PTP_PUSH:
+	case TOPIC_NIL_PTP_PUSH://点对点
+		// 对于 PTP 配置，将消费者添加到 PTP 配置中
+		s.PTP_config.AddCli(in.consumer, cli) // 调用 AddCli 方法将消费者添加到 PTP 配置中
 
-		s.PTP_config.AddCli(in.consumer, cli) //向config中ADD consumer
-	case TOPIC_KEY_PSB_PUSH:
-
+	case TOPIC_KEY_PSB_PUSH://发布订阅
+		// 对于 PSB 配置，启动相应的 PSB 配置推送操作
 		config, ok := s.PSB_configs[in.part_name+in.consumer]
 		if !ok {
-			logger.DEBUG(logger.DError, "this PSBconfig PUSH id not been\n")
+			logger.DEBUG(logger.DError, "this PSBconfig PUSH id not been\n") // 如果找不到配置，记录错误日志
 		}
-		config.Start(in, cli)
+		config.Start(in, cli) // 启动 PSB 配置的推送操作
 	}
 }
 
@@ -746,6 +755,7 @@ func (c *Config) DeleteCli(part_name string, cli_name string) {
 	}
 }
 
+//添加一个消息分区
 func (c *Config) AddPartition(in info, partition *Partition, file *File, zkclient *zkserver_operations.Client) error {
 	c.mu.Lock()
 
@@ -753,8 +763,8 @@ func (c *Config) AddPartition(in info, partition *Partition, file *File, zkclien
 	c.Partitions[in.part_name] = partition
 	c.Files[file.filename] = file
 
-	c.parts[in.part_name] = NewPart(in, file, zkclient)
-	c.parts[in.part_name].Start(c.part_close)
+	c.parts[in.part_name] = NewPart(in, file, zkclient)//创建一个新的消息分区
+	c.parts[in.part_name].Start(c.part_close)//启动分区的处理
 	c.mu.Unlock()
 
 	c.RebalancePtoC() //更新配置
@@ -1042,14 +1052,18 @@ func (c *Consistent) getPosition(hash uint32) int {
 	}
 }
 
+// PSBConfig_PUSH 结构体用于处理消息推送的配置和操作。
+// 主要包括分区关闭通道、文件操作、客户端以及分区。
 type PSBConfig_PUSH struct {
-	mu sync.RWMutex
+	mu sync.RWMutex // 读写锁，用于保护结构体中的数据
 
-	part_close chan *Part
-	file       *File
+	part_close chan *Part // 分区关闭通道，用于接收分区关闭信号
 
-	Cli  *client_operations.Client
-	part *Part //PTP的Part   partition_name to Part
+	file *File // 文件操作对象，用于管理和操作文件
+
+	Cli *client_operations.Client // 客户端对象，用于与消息推送相关的操作
+
+	part *Part // 分区对象，表示 PTP（Partition to Part）的分区，管理与特定分区相关的操作
 }
 
 func NewPSBConfigPush(in info, file *File, zkclient *zkserver_operations.Client) *PSBConfig_PUSH {
@@ -1065,14 +1079,24 @@ func NewPSBConfigPush(in info, file *File, zkclient *zkserver_operations.Client)
 	return ret
 }
 
+// Start 启动 PSBConfig_PUSH 配置的推送操作。
+// 该方法初始化客户端，更新分区的客户端列表，并启动分区操作。
 func (pc *PSBConfig_PUSH) Start(in info, cli *client_operations.Client) {
-	pc.mu.Lock()
-	pc.Cli = cli
-	var names []string
-	clis := make(map[string]*client_operations.Client)
-	names = append(names, in.consumer)
-	clis[in.consumer] = cli
+	pc.mu.Lock() // 获取写锁，确保对共享资源的安全修改
+
+	pc.Cli = cli // 设置 PSBConfig_PUSH 的客户端
+
+	var names []string // 初始化客户端名称列表
+	clis := make(map[string]*client_operations.Client) // 初始化客户端映射
+
+	names = append(names, in.consumer) // 将传入的消费者名称添加到列表中
+	clis[in.consumer] = cli // 将传入的客户端对象添加到映射中
+
+	// 更新分区的客户端列表
 	pc.part.UpdateClis(names, clis)
+
+	// 启动分区操作，传入关闭信号通道
 	pc.part.Start(pc.part_close)
-	pc.mu.Unlock()
+
+	pc.mu.Unlock() // 释放写锁，允许其他线程访问
 }

@@ -521,7 +521,7 @@ func (s *Server) StartGet(in info) (err error) {
 		defer s.mu.RUnlock()
 		//已经由zkserver检查过是否订阅
 		sub_name := GetStringfromSub(in.topic_name, in.part_name, in.option)
-		//添加到Config后会进行负载均衡，生成新的配置，然后执行新的配置
+		//添加到订阅信息Config后会进行负载均衡，生成新的配置，然后执行新的配置
 		return s.topics[in.topic_name].HandleStartToGet(sub_name, in, s.consumers[in.consumer].GetCli())
 
 	case TOPIC_KEY_PSB_PUSH:

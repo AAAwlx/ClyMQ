@@ -97,9 +97,14 @@ type Map struct {
 	Consumers map[string]bool `json:"consumer"`
 }
 
+// RegisterNode 将指定的节点信息注册到 ZooKeeper。
+// 参数:
+//   - znode: 要注册的节点对象，类型可以是 BrokerNode、TopicNode、PartitionNode、BlockNode、DuplicateNode 或 SubscriptionNode。
+// 返回值:
+//   - err: 如果在处理或注册节点时发生错误，则返回相应的错误信息。
 func (z *ZK) RegisterNode(znode interface{}) (err error) {
-	path := ""
-	var data []byte
+	path := ""            // 用于存储节点路径
+	var data []byte      // 存储节点数据的字节切片
 	var bnode BrokerNode
 	var tnode TopicNode
 	var pnode PartitionNode
@@ -107,81 +112,92 @@ func (z *ZK) RegisterNode(znode interface{}) (err error) {
 	var dnode DuplicateNode
 	var snode SubscriptionNode
 
+	// 获取 znode 的类型
 	i := reflect.TypeOf(znode)
 	switch i.Name() {
 	case "BrokerNode":
 		bnode = znode.(BrokerNode)
 		path += z.BrokerRoot + "/" + bnode.Name
-		data, err = json.Marshal(bnode)
+		data, err = json.Marshal(bnode) // 将节点数据序列化为 JSON
 	case "TopicNode":
 		tnode = znode.(TopicNode)
 		path += z.TopicRoot + "/" + tnode.Name
-		data, err = json.Marshal(tnode)
+		data, err = json.Marshal(tnode) // 将节点数据序列化为 JSON
 	case "PartitionNode":
 		pnode = znode.(PartitionNode)
 		path += z.TopicRoot + "/" + pnode.TopicName + "/Partitions/" + pnode.Name
-		data, err = json.Marshal(pnode)
+		data, err = json.Marshal(pnode) // 将节点数据序列化为 JSON
 	case "SubscriptionNode":
 		snode = znode.(SubscriptionNode)
 		path += z.TopicRoot + "/" + snode.TopicName + "/Subscriptions/" + snode.Name
 	case "BlockNode":
 		blnode = znode.(BlockNode)
 		path += z.TopicRoot + "/" + blnode.TopicName + "/Partitions/" + blnode.PartitionName + "/" + blnode.Name
-		data, err = json.Marshal(blnode)
+		data, err = json.Marshal(blnode) // 将节点数据序列化为 JSON
 	case "DuplicateNode":
 		dnode = znode.(DuplicateNode)
 		path += z.TopicRoot + "/" + dnode.TopicName + "/Partitions/" + dnode.PartitionName + "/" + dnode.BlockName + "/" + dnode.BrokerName
-		data, err = json.Marshal(dnode)
+		data, err = json.Marshal(dnode) // 将节点数据序列化为 JSON
 	}
 
+	// 如果序列化数据时发生错误，记录错误日志并返回错误
 	if err != nil {
 		logger.DEBUG(logger.DError, "the node %v turn json fail%v\n", path, err.Error())
 		return err
 	}
-	// logger.DEBUG(logger.DError, "Create a node is ", path, i.Name())
+
+	// 检查节点路径是否已经存在
 	ok, _, _ := z.conn.Exists(path)
 	if ok {
+		// 节点已经存在，更新节点的数据
 		logger.DEBUG(logger.DLog, "the node %v had in zookeeper\n", path)
-		_, sate, _ := z.conn.Get(path)
-		z.conn.Set(path, data, sate.Version)
-		// return err
+		_, state, _ := z.conn.Get(path)
+		_, err = z.conn.Set(path, data, state.Version) // 更新节点的数据
+		if err != nil {
+			logger.DEBUG(logger.DError, "the node %v Set fail %v\n", path, err.Error())
+			return err
+		}
 	} else {
+		// 节点不存在，创建新的节点
 		_, err = z.conn.Create(path, data, 0, zk.WorldACL(zk.PermAll))
 		if err != nil {
-			logger.DEBUG(logger.DError, "the node %v Creaate fail %v\n", path, err.Error())
+			logger.DEBUG(logger.DError, "the node %v Create fail %v\n", path, err.Error())
 			return err
 		}
 	}
 
+	// 如果节点类型是 TopicNode，创建 Partitions 和 Subscriptions 子节点
 	if i.Name() == "TopicNode" {
-		//创建Partitions和Subscriptions
-		partitions_path := path + "/" + "Partitions"
+		// 创建 Partitions 节点
+		partitions_path := path + "/Partitions"
 		ok, _, err = z.conn.Exists(partitions_path)
 		if ok {
 			logger.DEBUG(logger.DLog, "the node %v had in zookeeper\n", partitions_path)
-			return err
-		}
-		_, err = z.conn.Create(partitions_path, nil, 0, zk.WorldACL(zk.PermAll))
-		if err != nil {
-			logger.DEBUG(logger.DError, "the node %v Creaate fail\n", partitions_path)
-			return err
+		} else {
+			_, err = z.conn.Create(partitions_path, nil, 0, zk.WorldACL(zk.PermAll))
+			if err != nil {
+				logger.DEBUG(logger.DError, "the node %v Create fail\n", partitions_path)
+				return err
+			}
 		}
 
-		subscription_apth := path + "/" + "Subscriptions"
-		ok, _, err = z.conn.Exists(subscription_apth)
+		// 创建 Subscriptions 节点
+		subscription_path := path + "/Subscriptions"
+		ok, _, err = z.conn.Exists(subscription_path)
 		if ok {
-			logger.DEBUG(logger.DLog, "the node %v had in zookeeper\n", subscription_apth)
-			return err
-		}
-		_, err = z.conn.Create(subscription_apth, nil, 0, zk.WorldACL(zk.PermAll))
-		if err != nil {
-			logger.DEBUG(logger.DError, "the node %v Creaate fail\n", subscription_apth)
-			return err
+			logger.DEBUG(logger.DLog, "the node %v had in zookeeper\n", subscription_path)
+		} else {
+			_, err = z.conn.Create(subscription_path, nil, 0, zk.WorldACL(zk.PermAll))
+			if err != nil {
+				logger.DEBUG(logger.DError, "the node %v Create fail\n", subscription_path)
+				return err
+			}
 		}
 	}
 
 	return nil
 }
+
 
 func (z *ZK) UpdatePartitionNode(pnode PartitionNode) error {
 	path := z.TopicRoot + "/" + pnode.TopicName + "/Partitions/" + pnode.Name
@@ -429,25 +445,37 @@ func (z *ZK) CheckSub(info StartGetInfo) bool {
 
 //若Leader不在线，则等待一秒继续请求
 func (z *ZK) GetPartNowBrokerNode(topic_name, part_name string) (BrokerNode, BlockNode, int8, error) {
+	// 构造获取当前块的路径
 	now_block_path := z.TopicRoot + "/" + topic_name + "/" + "Partitions" + "/" + part_name + "/" + "NowBlock"
+	
 	for {
+		// 获取当前块的信息
 		NowBlock, err := z.GetBlockNode(now_block_path)
 		if err != nil {
+			// 如果获取块信息失败，记录错误日志，并返回错误
 			logger.DEBUG(logger.DError, "get block node fail, path %v err is %v\n", now_block_path, err.Error())
 			return BrokerNode{}, BlockNode{}, 0, err
 		}
 
+		// 获取领导 Broker 节点的信息
 		Broker, err := z.GetBrokerNode(NowBlock.LeaderBroker)
 		if err != nil {
+			// 如果获取 Broker 信息失败，记录错误日志，并返回错误
 			logger.DEBUG(logger.DError, "get broker node fail, Name %v err is %v\n", NowBlock.LeaderBroker, err.Error())
 			return BrokerNode{}, NowBlock, 1, err
 		}
+		
+		// 记录领导 Broker 节点的信息
 		logger.DEBUG(logger.DLog, "the Leader Broker is %v\n", NowBlock.LeaderBroker)
+		
+		// 检查 Broker 是否在线
 		ret := z.CheckBroker(Broker.Name)
 		
 		if ret {
+			// 如果 Broker 在线，返回 Broker 节点、块信息和状态码 2
 			return Broker, NowBlock, 2, nil
 		} else {
+			// 如果 Broker 不在线，记录日志并等待 1 秒后重试
 			logger.DEBUG(logger.DLog, "the broker %v is not online\n", Broker.Name)
 			time.Sleep(time.Second * 1)
 		}

@@ -24,8 +24,8 @@ type Consumer struct {
 
 	srv      server.Server
 	port     string
-	zkBroker zkserver_operations.Client
-	Brokers  map[string]*server_operations.Client //broker_name--client
+	zkBroker zkserver_operations.Client//zookeeper对应的rpc客户端
+	Brokers  map[string]*server_operations.Client //broker_name与其对应的rpc客户端
 	// PTP_Topics 	map[string]
 	// Topic_Partions map[string]Info
 }
@@ -46,6 +46,7 @@ func NewConsumer(zkbroker string, name string, port string) (*Consumer, error) {
 	return &C, err
 }
 
+//设置消费者状态为alive
 func (c *Consumer) Alive() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -107,79 +108,90 @@ func (c *Consumer) Subscription(topic, partition string, option int8) (err error
 	return nil
 }
 
+// StartGet 启动从 Broker 获取分区信息的操作
 func (c *Consumer) StartGet(info Info) (partkeys []PartKey, ret string, err error) {
 
-	resp, err := c.zkBroker.ConStartGetBroker(context.Background(), &api.ConStartGetBrokRequest{
-		CliName:   c.Name,
-		TopicName: info.Topic,
-		PartName:  info.Part,
-		Option:    info.Option,
-		Index:     info.Offset,
-	})
+	// 向 ZooKeeper 发送请求以启动从 Broker 获取分区信息的操作
+    resp, err := c.zkBroker.ConStartGetBroker(context.Background(), &api.ConStartGetBrokRequest{
+        CliName:   c.Name,         // 客户端名称
+        TopicName: info.Topic,     // 主题名称
+        PartName:  info.Part,      // 分区名称
+        Option:    info.Option,    // 操作选项
+        Index:     info.Offset,    // 偏移量
+    })
 
-	if err != nil || !resp.Ret {
-		return nil, ret, err
-	}
+    // 如果发生错误或响应失败，返回空结果和错误
+    if err != nil || !resp.Ret {
+        return nil, ret, err
+    }
 
-	// broks := make([]BrokerInfo, resp.Size)
-	// json.Unmarshal(resp.Broks, &broks)
+    // 解析返回的分区信息
+    var parts Parts
+    err = json.Unmarshal(resp.Parts, &parts)
+    if err != nil {
+        return nil, "", err
+    }
 
-	// parts = make([]PartKey, resp.Size)
-	var parts Parts
-	err = json.Unmarshal(resp.Parts, &parts)
-	if err != nil {
-		return nil, "", err
-	}
-	logger.DEBUG(logger.DLog, "start get parts json is %v turn %v\n", resp.Parts, parts.PartKeys)
-	if info.Option == 1 || info.Option == 3 { //pub
-		ret, err = c.StartGetToBroker(parts.PartKeys, info)
-	}
-	return parts.PartKeys, ret, err
+    // 打印调试信息，显示获取到的分区信息
+    logger.DEBUG(logger.DLog, "start get parts json is %v turn %v\n", resp.Parts, parts.PartKeys)
+
+    // 根据选项执行不同的处理
+    if info.Option == 1 || info.Option == 3 { // 如果选项是 1 或 3，执行发布操作
+        ret, err = c.StartGetToBroker(parts.PartKeys, info)
+    }
+
+    // 返回分区键列表、结果字符串和错误（如果有）
+    return parts.PartKeys, ret, err
 }
 
+//向每个 Broker 发送开始获取请求，并连接到各个 Broker
 func (c *Consumer) StartGetToBroker(parts []PartKey, info Info) (ret string, err error) {
 
-	//连接上各个broker，并发送start请求
+    // 遍历每个分区，并向相应的 Broker 发送开始获取请求
+    for _, part := range parts {
 
-	for _, part := range parts {
+        // 如果分区的错误状态不为 "ok"，将错误信息追加到返回结果中，并继续处理下一个分区
+        if part.Err != "ok" {
+            ret += part.Err
+            continue
+        }
 
-		if part.Err != "ok" {
-			ret += part.Err
-			continue
-		}
+        // 创建发送请求的结构体
+        rep := &api.InfoGetRequest{
+            CliName:   c.Name,        // 客户端名称
+            TopicName: info.Topic,    // 主题名称
+            PartName:  part.Name,     // 分区名称
+            Option:    info.Option,   // 操作选项
+            Offset:    info.Offset,   // 偏移量
+        }
 
-		rep := &api.InfoGetRequest{
-			CliName:   c.Name,
-			TopicName: info.Topic,
-			PartName:  part.Name,
-			Option:    info.Option,
-			Offset:    info.Offset,
-		}
+        // 检查 Broker 客户端是否已经存在
+        bro_cli, ok := c.Brokers[part.Broker_name]
+        if !ok {
+            // 如果 Broker 客户端不存在，则创建新的客户端
+            bro_cli, err := server_operations.NewClient(c.Name, client.WithHostPorts(part.Broker_H_P))
+            if err != nil {
+                return ret, err // 如果创建客户端失败，返回错误
+            }
+            // 如果选项是 1，初始化 Broker 客户端并发送开始获取请求
+            if info.Option == 1 { //ptp
+                c.Brokers[part.Broker_name] = &bro_cli
+                bro_cli.StarttoGet(context.Background(), rep)
+            }
+        }
+        // 向 Broker 发送信息
+        err = c.SendInfo(c.port, bro_cli)
+        if err != nil {
+            logger.DEBUG(logger.DError, "%v\n", err.Error()) // 记录错误信息
+            return ret, err // 返回错误
+        }
 
-		bro_cli, ok := c.Brokers[part.Broker_name]
-		if !ok {
-			bro_cli, err := server_operations.NewClient(c.Name, client.WithHostPorts(part.Broker_H_P))
-			if err != nil {
-				return ret, err
-			}
-			if info.Option == 1 { //ptp
-				c.Brokers[part.Broker_name] = &bro_cli
-
-				bro_cli.StarttoGet(context.Background(), rep)
-			}
-		}
-		//发送info
-		err = c.SendInfo(c.port, bro_cli)
-		if err != nil {
-			logger.DEBUG(logger.DError, "%v\n", err.Error())
-			return ret, err
-		}
-
-		if info.Option == 3 { //psb
-			(*bro_cli).StarttoGet(context.Background(), rep)
-		}
-	}
-	return ret, nil
+        // 如果选项是 3，向 Broker 发送开始获取请求
+        if info.Option == 3 { //psb
+            (*bro_cli).StarttoGet(context.Background(), rep)
+        }
+    }
+    return ret, nil // 返回结果字符串和 nil 错误
 }
 
 func (c *Consumer) GetCli(part PartKey) (cli *server_operations.Client, err error) {
@@ -197,7 +209,7 @@ func (c *Consumer) GetCli(part PartKey) (cli *server_operations.Client, err erro
 	return cli, nil
 }
 
-//向broker索要信息
+//向broker拉取信息
 func (c *Consumer) Pull(info Info) (int64, int64, []Msg, error) {
 	resp, err := (*info.Cli).Pull(context.Background(), &api.PullRequest{
 		Consumer: c.Name,
@@ -250,6 +262,7 @@ func NewInfo(offset int64, topic, part string) Info {
 	}
 }
 
+//消费者向消息队列服务端提供的消息推送
 func (c *Consumer) Pub(ctx context.Context, req *api.PubRequest) (resp *api.PubResponse, err error) {
 	fmt.Println(req)
 

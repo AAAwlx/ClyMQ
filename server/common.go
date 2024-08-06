@@ -73,42 +73,62 @@ const (
 	// PSB_PULL = 4
 )
 
+//创建并启动一个消息队列服务器的节点
 func NewBrokerAndStart(zkinfo zookeeper.ZkInfo, opt Options) *RPCServer {
 	//start the broker server
 	// fmt.Println("Broker_host_Poet", opt.Broker_Host_Port)
+	// 解析 Broker 服务器的 TCP 地址
 	addr_bro, _ := net.ResolveTCPAddr("tcp", opt.Broker_Host_Port)
+	// 解析 Raft 服务器的 TCP 地址
 	addr_raf, _ := net.ResolveTCPAddr("tcp", opt.Raft_Host_Port)
+	
 	var opts_bro, opts_raf []Ser.Option
+	// 为 Broker 服务器设置服务地址选项
 	opts_bro = append(opts_bro, Ser.WithServiceAddr(addr_bro))
-	opts_raf = append(opts_raf,  Ser.WithServiceAddr(addr_raf))
+	// 为 Raft 服务器设置服务地址选项
+	opts_raf = append(opts_raf, Ser.WithServiceAddr(addr_raf))
 
+	// 创建新的 RPC 服务器实例，使用提供的 ZooKeeper 配置信息
 	rpcServer := NewRpcServer(zkinfo)
 
+	// 启动 RPC 服务器，并在新的 goroutine 中运行
 	go func() {
+		// 启动 RPC 服务器，传入 Broker 和 Raft 的选项以及其他配置信息
 		err := rpcServer.Start(opts_bro, nil, opts_raf, opt)
 		if err != nil {
+			// 如果启动 RPC 服务器时发生错误，则记录错误日志
 			logger.DEBUG(logger.DError, "%v\n", err)
 		}
 	}()
 
+	// 返回创建的 RPC 服务器实例
 	return &rpcServer
 }
 
+//创建并启动一个zookeeper节点
 func NewZKServerAndStart(zkinfo zookeeper.ZkInfo, opt Options) *RPCServer {
-	//start the zookeeper server
+	// 解析 ZooKeeper 服务器的 TCP 地址
 	addr_zks, _ := net.ResolveTCPAddr("tcp", opt.Zkserver_Host_Port)
+	
+	// 创建一个切片用于存储 ZooKeeper 服务器的启动选项
 	var opts_zks []Ser.Option
+	// 为 ZooKeeper 服务器设置服务地址选项
 	opts_zks = append(opts_zks, Ser.WithServiceAddr(addr_zks))
 
-	rpcServer := NewRpcServer(zkinfo)
+	// 创建新的 RPC 服务器实例，使用提供的 ZooKeeper 配置信息
+	rpcServer := NewRpcServer(zkinfo) // 注册的针对 ZooKeeper 的服务
 
+	// 启动 RPC 服务器，并在新的 goroutine 中运行
 	go func() {
+		// 启动 RPC 服务器，传入 ZooKeeper 的选项以及其他配置信息
 		err := rpcServer.Start(nil, opts_zks, nil, opt)
 		if err != nil {
+			// 如果启动 RPC 服务器时发生错误，则记录错误日志
 			logger.DEBUG(logger.DError, "%v\n", err)
 		}
 	}()
 
+	// 返回创建的 RPC 服务器实例
 	return &rpcServer
 }
 
