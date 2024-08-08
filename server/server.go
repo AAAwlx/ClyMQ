@@ -65,37 +65,54 @@ type Message struct {
 // }
 
 type info struct {
-	// name       string //broker name
+	// topic_name: 消息主题名称
 	topic_name string
+	
+	// part_name: 消息分区名称
 	part_name  string
+	
+	// file_name: 文件名称
 	file_name  string
+	
+	// new_name: 新名称（可能用于重命名）
 	new_name   string
+	
+	// option: 操作选项
 	option     int8
+	
+	// offset: 偏移量
 	offset     int64
+	
+	// size: 数据大小（单位可能为字节）
 	size       int8
-
+	
+	// ack: 确认标志（用于消息确认）
 	ack int8
-
+	
+	// producer: 消息生产者标识
 	producer string
+	
+	// consumer: 消息消费者标识
 	consumer string
+	
+	// cmdindex: 命令索引（用于跟踪命令序列）
 	cmdindex int64
-	// startIndex  int64
-	// endIndex  	int64
+	
+	// message: 消息内容的字节切片
 	message []byte
-
-	//raft
-	brokers map[string]string
-	brok_me map[string]int
-	me      int
-
-	//fetch
-	LeaderBroker string
-	HostPort     string
-
-	//update dup
-	zkclient *zkserver_operations.Client
-	BrokerName string
-	// BlockName string
+	
+	// raft: Raft 相关配置
+	brokers map[string]string // broker 地址映射（键: broker 名称, 值: broker 地址）
+	brok_me map[string]int    // broker 状态映射（键: broker 名称, 值: 状态）
+	me      int                // 当前节点标识
+	
+	// fetch: 获取相关配置
+	LeaderBroker string // 主节点 broker 的名称
+	HostPort     string // 主机端口
+	
+	// update dup: ZooKeeper 客户端和 broker 名称
+	zkclient *zkserver_operations.Client // ZooKeeper 客户端实例
+	BrokerName string // Broker 名称
 }
 
 // type startget struct {
@@ -591,35 +608,48 @@ func (s *Server) UnSubHandle(in info) error {
 //start到该partition中的raft集群中
 //收到返回后判断该写入还是返回
 func (s *Server) PushHandle(in info) (ret string, err error) {
+	// 记录调试日志，表明收到生产者的消息
+	logger.DEBUG(logger.DLog, "get Message from producer\n")
 
-	logger.DEBUG(logger.DLog, "get Message form producer\n")
+	// 获取读锁，以安全地访问共享资源
 	s.mu.RLock()
+	// 从服务器的主题映射中查找指定主题
 	topic, ok := s.topics[in.topic_name]
+	// 获取分区 Raft 实例
 	part_raft := s.parts_rafts
+	// 释放读锁
 	s.mu.RUnlock()
 
+	// 如果主题不存在，则返回错误信息
 	if !ok {
 		ret = "this topic is not in this broker"
 		logger.DEBUG(logger.DError, "Topic %v, is not in this broker\n", in.topic_name)
 		return ret, errors.New(ret)
 	}
 
+	// 根据 ack 值的不同执行不同的操作
 	switch in.ack {
-	case -1: //raft同步,并写入
+	case -1: // Raft 同步，并写入
+		// 调用 part_raft 的 Append 方法，进行同步并写入消息
 		ret, err = part_raft.Append(in)
-	case 1: //leader写入,不等待同步
+	case 1: // Leader 写入，不等待同步
+		// 直接将消息添加到主题中，不等待同步
 		err = topic.addMessage(in)
-	case 0: //直接返回
+	case 0: // 直接返回
+		// 异步将消息添加到主题中
 		go topic.addMessage(in)
 	}
 
+	// 如果发生错误，记录错误日志并返回错误信息
 	if err != nil {
 		logger.DEBUG(logger.DError, "%v\n", err.Error())
 		return err.Error(), err
 	}
 
+	// 返回处理结果和错误（如果没有错误则为 nil）
 	return ret, err
 }
+
 
 // PullHandle
 // Pull message

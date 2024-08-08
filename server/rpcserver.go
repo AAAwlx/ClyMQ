@@ -35,7 +35,7 @@ func NewRpcServer(zkinfo zookeeper.ZkInfo) RPCServer {
 	}
 }
 
-//启动一个rpc服务器实例
+//启动一个服务器实例
 func (s *RPCServer) Start(opts_cli, opts_zks, opts_raf []server.Option, opt Options) error {
 
 	// 根据选项的 Tag 判断服务器类型

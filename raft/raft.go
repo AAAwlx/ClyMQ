@@ -38,33 +38,79 @@ type LogNode struct {
 }
 
 type Raft struct {
+	// 用于标识此 Raft 实例所属的主题名称
+	topic_name string
+	
+	// 用于标识此 Raft 实例所属的分区名称
+	part_name string
 
-	topic_name 	string
-	part_name 	string
-
-	mu        sync.Mutex               // Lock to protect shared access to this peer's state
-	peers     []*raft_operations.Client // RPC end points of all peers
-	persister *Persister               // Object to hold this peer's persisted state
-	me        int                      // this peer's index into peers[]
-	dead      int32                    // set by Kill()
-	currentTerm int //当前任期
-	leaderId    int
+	// mu 用于保护对该 Raft 实例状态的共享访问
+	mu sync.Mutex
+	
+	// peers 是一个包含所有对等节点的 RPC 端点的列表
+	peers []*raft_operations.Client
+	
+	// persister 用于持久化此 Raft 实例的状态
+	persister *Persister
+	
+	// me 表示此 Raft 实例在 peers 列表中的索引
+	me int
+	
+	// dead 表示 Raft 实例是否已被终止。使用 int32 类型是为了与 atomic 操作兼容
+	dead int32
+	
+	// currentTerm 当前的任期编号，用于区分不同的任期
+	currentTerm int
+	
+	// leaderId 当前任期中的领导者节点的索引
+	leaderId int
+	
+	// votedFor 记录当前 Raft 实例在当前任期中投票给了哪个候选人
 	votedFor int
-	// cond     *sync.Cond
-	state int //follower0       candidate1         leader2
+	
+	// state 表示当前状态：
+	// 0 - follower
+	// 1 - candidate
+	// 2 - leader
+	state int
+	
+	// electionRandomTimeout 选举的随机超时值，用于触发选举
 	electionRandomTimeout int
-	electionElapsed       int
+	
+	// electionElapsed 从上一次选举请求开始经过的时间
+	electionElapsed int
+	
+	// log 存储 Raft 实例的日志条目
 	log []LogNode
+	
+	// commitIndex 已提交的日志条目的索引
 	commitIndex int
+	
+	// lastApplied 已应用到状态机的日志条目的索引
 	lastApplied int
+	
+	// nextIndex 表示每个对等节点的下一个日志条目索引
 	nextIndex []int
+	
+	// matchIndex 表示每个对等节点的匹配日志条目索引
 	matchIndex []int
+	
+	// X 一个额外的字段，具体用途不明
 	X int
+	
+	// snapshot 存储 Raft 实例的快照数据
 	snapshot []byte
+	
+	// lastTerm 上一个任期的编号
 	lastTerm int
+	
+	// lastIndex 上一个任期中最后一个日志条目的索引
 	lastIndex int
+	
+	// tindex 另一个额外的索引字段，具体用途不明
 	tindex int
 }
+
 
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).

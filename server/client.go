@@ -333,45 +333,59 @@ func (p *Part) GetDone(close chan *Part) {
 }
 
 func (p *Part) SendOneBlock(name string, cli *client_operations.Client) {
-
+	// 定义变量，in 用于跟踪当前处理的缓冲区索引，num 用于记录重试次数
 	var in int64
 	in = 0
 	num := 0
+
 	for {
+		// 加锁以保护对 p 的并发访问
 		p.mu.Lock()
+
+		// 如果 in 为 0，初始化为 start_index
 		if in == 0 {
 			in = p.start_index
 		}
 
-		if _, ok := p.clis[name]; !ok { //不存在，不再负责这个分片
+		// 如果 name 对应的客户端不存在，则释放锁并退出
+		if _, ok := p.clis[name]; !ok {
 			p.mu.Unlock()
 			return
 		}
 
+		// 如果 in 超过 buf_done 的长度，重置 in
 		if int(in) >= len(p.buf_done) {
 			in = 0
 		}
 
+		// 如果当前缓冲区的状态为 NOTDO，开始处理
 		if p.buf_done[in] == NOTDO {
-
+			// 从缓冲区中获取消息和节点信息
 			msg, ok1 := p.buffer_msg[in]
 			node, ok2 := p.buffer_node[in]
 
 			if !ok1 || !ok2 {
+				// 如果无法从缓冲区中获取消息和节点信息，记录错误日志
 				logger.DEBUG(logger.DError, "get msg and node from buffer the in = %v\n", in)
 			}
+
+			// 标记当前缓冲区为已处理
 			p.buf_done[in] = HAVEDO
 			p.mu.Unlock()
 
+			// 将消息编码为 JSON
 			data_msg, _ := json.Marshal(msg)
 
+			// 循环尝试发送消息
 			for {
 				err := p.Pub(cli, node, data_msg)
 
-				if err != nil { //超时等原因
+				if err != nil { // 如果发生错误，如超时等
+					// 记录错误日志
 					logger.DEBUG(logger.DError, "%v\n", err.Error())
 					num++
-					if num >= AGAIN_NUM { //超时三次，将不再向其发送
+					if num >= AGAIN_NUM { // 如果重试次数达到上限
+						// 将处理状态发送到 part_had 通道
 						p.part_had <- Done{
 							in:   node.Start_index,
 							err:  TIOUT,
@@ -379,6 +393,7 @@ func (p *Part) SendOneBlock(name string, cli *client_operations.Client) {
 							cli:  cli,
 						}
 
+						// 重新将缓冲区标记为 NOTDO
 						p.mu.Lock()
 						p.buf_done[in] = NOTDO
 						p.mu.Unlock()
@@ -386,7 +401,8 @@ func (p *Part) SendOneBlock(name string, cli *client_operations.Client) {
 						break
 					}
 
-				} else {
+				} else { // 发送成功
+					// 将处理状态发送到 part_had 通道
 					p.part_had <- Done{
 						in:   node.Start_index,
 						err:  OK,
@@ -396,15 +412,17 @@ func (p *Part) SendOneBlock(name string, cli *client_operations.Client) {
 					break
 				}
 			}
+			// 释放锁
 			p.mu.Unlock()
 			break
-		} else {
+		} else { // 如果当前缓冲区已处理，更新 in 为下一个缓冲区的起始索引
 			in = p.buffer_node[in].End_index + 1
 		}
+		// 释放锁
 		p.mu.Unlock()
 	}
-
 }
+
 
 // publish 发布
 func (p *Part) Pub(cli *client_operations.Client, node Key, data []byte) error {
