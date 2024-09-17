@@ -16,7 +16,7 @@ func main() {
 	opts = append(opts, server.WithServiceAddr(addr))
 	rpcServer := new(Server.RPCServer)
 	
-	err := rpcServer.Start(opts)
+	err := rpcServer.Start(opts)//启动Broker
 	if err != nil {
 		fmt.Println(err)
 	}

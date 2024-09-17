@@ -95,7 +95,7 @@ func (s *RPCServer) ShutDown_server() {
 
 }
 
-//producer--->broker server
+//producer--->broker server 推送消息
 func (s *RPCServer) Push(ctx context.Context, req *api.PushRequest) (resp *api.PushResponse, err error) {
 
 	ret, err := s.server.PushHandle(info{
@@ -120,7 +120,7 @@ func (s *RPCServer) Push(ctx context.Context, req *api.PushRequest) (resp *api.P
 	}, nil
 }
 
-//producer 获取该向对应broker的信息
+//producer 获取该向对应broker的信息 producer--->broker server
 func (s *RPCServer) ProGetBroker(ctx context.Context, req *api.ProGetBrokRequest) (r *api.ProGetBrokResponse, err error) {
 	// 调用 zkserver 的 ProGetBroker 方法获取 Broker 信息
 	info := s.zkserver.ProGetBroker(Info_in{
@@ -183,7 +183,7 @@ func (s *RPCServer) CreatePart(ctx context.Context, req *api.CreatePartRequest) 
 	}, nil
 }
 
-//producer--->zkserver
+//producer--->zkserver设置分区状态
 func (s *RPCServer) SetPartitionState(ctx context.Context, req *api.SetPartitionStateRequest) (r *api.SetPartitionStateResponse, err error) {
 	// 调用 ZooKeeper 服务器的 SetPartitionState 方法来设置分区状态
 	info := s.zkserver.SetPartitionState(Info_in{
@@ -238,7 +238,7 @@ func (s *RPCServer) StarttoGet(ctx context.Context, req *api.InfoGetRequest) (re
 	return &api.InfoGetResponse{Ret: false}, err
 }
 
-//consumer--->broker server
+//consumer--->broker server 消费者拉取消息
 func (s *RPCServer) Pull(ctx context.Context, req *api.PullRequest) (resp *api.PullResponse, err error) {
 	Err := "ok"
 	ret, err := s.server.PullHandle(info{
@@ -271,24 +271,29 @@ func (s *RPCServer) Pull(ctx context.Context, req *api.PullRequest) (resp *api.P
 }
 
 
-// consumer---->zkserver
+// consumer---->zkserver 消费者请求Broker信息
 func (s *RPCServer) ConStartGetBroker(ctx context.Context, req *api.ConStartGetBrokRequest) (r *api.ConStartGetBrokResponse, err error) {
+	// 调用 zkserver 的 HandStartGetBroker 函数来处理获取 Broker 请求
 	parts, size, err := s.zkserver.HandStartGetBroker(Info_in{
-		cli_name:   req.CliName,
-		topic_name: req.TopicName,
-		part_name:  req.PartName,
-		option:     req.Option,
-		index:      req.Index,
+		cli_name:   req.CliName,     // 客户端名称
+		topic_name: req.TopicName,   // 主题名称
+		part_name:  req.PartName,    // 分区名称
+		option:     req.Option,      // 选项（可能是操作类型等）
+		index:      req.Index,       // 索引（可能是起始偏移量）
 	})
+
+	// 如果发生错误，返回响应，Ret 为 false，并返回错误信息
 	if err != nil {
 		return &api.ConStartGetBrokResponse{
-			Ret: false,
+			Ret: false,  // 标志操作失败
 		}, err
 	}
+
+	// 如果没有错误，返回成功的响应，包含分区信息和大小
 	return &api.ConStartGetBrokResponse{
-		Ret:   true,
-		Size:  int64(size),
-		Parts: parts,
+		Ret:   true,           // 标志操作成功
+		Size:  int64(size),    // 返回的数据大小
+		Parts: parts,          // 返回的分区信息
 	}, nil
 }
 
@@ -368,24 +373,30 @@ func (s *RPCServer) UpdatePTPOffset(ctx context.Context, req *api.UpdatePTPOffse
 
 //broker---->zkserver
 func (s *RPCServer) UpdateDup(ctx context.Context, req *api.UpdateDupRequest) (r *api.UpdateDupResponse, err error) {
-	err = s.zkserver.UpdateDupNode(Info_in{
-		topic_name: req.Topic,
-		part_name:  req.Part,
-		cli_name:   req.BrokerName,
-		blockname:  req.BlockName,
-		index:      req.EndIndex,
-		// leader:     req.Leader,
-	})
-	if err != nil {
-		logger.DEBUG(logger.DError, "%v\n", err.Error())
-		return &api.UpdateDupResponse{
-			Ret: false,
-		}, err
-	}
-	return &api.UpdateDupResponse{
-		Ret: true,
-	}, nil
+    // 调用 ZooKeeper 服务器的 UpdateDupNode 方法，更新副本节点信息
+    err = s.zkserver.UpdateDupNode(Info_in{
+        topic_name: req.Topic,       // 从请求中获取要更新的 Topic 名称
+        part_name:  req.Part,        // 从请求中获取要更新的 Partition 名称
+        cli_name:   req.BrokerName,  // 从请求中获取副本的 Broker 名称
+        blockname:  req.BlockName,   // 从请求中获取要更新的 Block 名称
+        index:      req.EndIndex,    // 从请求中获取新的结束偏移量
+        // leader:     req.Leader,    // 此处 leader 字段被注释掉，可能不用于此功能
+    })
+
+    // 如果更新副本节点过程中出现错误，记录错误日志并返回错误响应
+    if err != nil {
+        logger.DEBUG(logger.DError, "%v\n", err.Error()) // 记录错误日志
+        return &api.UpdateDupResponse{
+            Ret: false,  // 返回 false 表示更新失败
+        }, err
+    }
+
+    // 如果更新成功，返回成功响应
+    return &api.UpdateDupResponse{
+        Ret: true,  // 返回 true 表示更新成功
+    }, nil
 }
+
 
 //broker---->zkserver
 func (s *RPCServer) BroGetConfig(ctx context.Context, req *api.BroGetConfigRequest) (r *api.BroGetConfigResponse, err error) {
@@ -561,26 +572,38 @@ func (s *RPCServer) CloseRaftPartition(ctx context.Context, req *api.CloseRaftPa
 	}, nil
 }
 
+// AddFetchPartition 处理从客户端发来的 Fetch Partition 请求
 func (s *RPCServer) AddFetchPartition(ctx context.Context, req *api.AddFetchPartitionRequest) (r *api.AddFetchPartitionResponse, err error) {
-	//BrokerName to HostPort
+	// 将请求中的 Brokers 字段从 JSON 解码为 BrokerS 结构
 	var Brokers BrokerS
-	json.Unmarshal(req.Brokers, &Brokers)
+	err = json.Unmarshal(req.Brokers, &Brokers)
+	if err != nil {
+		// 如果解码失败，返回错误
+		logger.DEBUG(logger.DError, "Failed to unmarshal brokers: %v", err)
+		return &api.AddFetchPartitionResponse{
+			Ret: false,
+			Err: "Failed to unmarshal brokers",
+		}, err
+	}
 
+	// 调用 Server 的 AddFetchHandle 方法处理 Fetch 请求
 	ret, err := s.server.AddFetchHandle(info{
-		topic_name:   req.TopicName,
-		part_name:    req.PartName,
-		LeaderBroker: req.LeaderBroker,
-		HostPort:     req.HostPort,
-		brokers:      Brokers.BroBrokers,
-		file_name:    req.FileName,
+		topic_name:   req.TopicName,     // 主题名称
+		part_name:    req.PartName,      // 分区名称
+		LeaderBroker: req.LeaderBroker,  // Leader Broker 名称
+		HostPort:     req.HostPort,      // Leader Broker 的 HostPort
+		brokers:      Brokers.BroBrokers, // 其他 brokers 的映射
+		file_name:    req.FileName,      // 文件名称
 	})
 	if err != nil {
+		// 如果处理失败，返回错误
 		return &api.AddFetchPartitionResponse{
 			Ret: false,
 			Err: ret,
 		}, err
 	}
 
+	// 返回处理成功的响应
 	return &api.AddFetchPartitionResponse{
 		Ret: true,
 		Err: ret,

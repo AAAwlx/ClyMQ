@@ -198,24 +198,37 @@ func (z *ZK) RegisterNode(znode interface{}) (err error) {
 	return nil
 }
 
-
+//更新Partition
 func (z *ZK) UpdatePartitionNode(pnode PartitionNode) error {
-	path := z.TopicRoot + "/" + pnode.TopicName + "/Partitions/" + pnode.Name
-	ok, _, err := z.conn.Exists(path)
-	if !ok {
-		return err
-	}
-	data, err := json.Marshal(pnode)
-	if err != nil {
-		return err
-	}
-	_, sate, _ := z.conn.Get(path)
-	_, err = z.conn.Set(path, data, sate.Version)
-	if err != nil {
-		return err
-	}
+    // 构造 ZooKeeper 中该 partition 节点的路径
+    path := z.TopicRoot + "/" + pnode.TopicName + "/Partitions/" + pnode.Name
 
-	return nil
+    // 检查该路径的节点是否存在
+    ok, _, err := z.conn.Exists(path)
+    if !ok { 
+        // 如果节点不存在，返回错误
+        return err
+    }
+
+    // 将 PartitionNode 对象序列化为 JSON 格式的字节数据
+    data, err := json.Marshal(pnode)
+    if err != nil {
+        // 如果序列化失败，返回错误
+        return err
+    }
+
+    // 获取该路径节点的状态信息
+    _, sate, _ := z.conn.Get(path)
+
+    // 更新该节点的数据，将序列化的 JSON 写入节点，并使用当前版本进行更新
+    _, err = z.conn.Set(path, data, sate.Version)
+    if err != nil {
+        // 如果更新失败，返回错误
+        return err
+    }
+
+    // 成功更新后返回 nil 表示没有错误
+    return nil
 }
 
 func (z *ZK) UpdateBlockNode(bnode BlockNode) error {
@@ -287,85 +300,118 @@ func (z *ZK) CheckBroker(BrokerName string) bool {
 
 //consumer 获取PTP的Brokers //（和PTP的offset）
 func (z *ZK) GetBrokers(topic string) ([]Part, error) {
-	path := z.TopicRoot + "/" + topic + "/" + "Partitions"
-	// var tnode TopicNode
-	ok, _, err := z.conn.Exists(path)
+    // 根据 topic 构建 Zookeeper 中 topic 对应的路径
+    path := z.TopicRoot + "/" + topic + "/" + "Partitions"
 
-	if !ok || err != nil {
-		logger.DEBUG(logger.DError, "%v\n", err.Error())
-		return nil, err
-	}
-	var Parts []Part
+    // 检查路径是否存在
+    ok, _, err := z.conn.Exists(path)
+    if !ok || err != nil {
+        // 如果路径不存在或发生错误，记录日志并返回错误
+        logger.DEBUG(logger.DError, "%v\n", err.Error())
+        return nil, err
+    }
 
-	partitions, _, _ := z.conn.Children(path)
-	for _, part := range partitions {
+    // 创建 Part 结构体切片，用于存储分区信息
+    var Parts []Part
 
-		PNode, err := z.GetPartitionNode(path + "/" + part)
-		if err != nil {
-			logger.DEBUG(logger.DError, "get PartitionNode fail%v/%v\n", path, part)
-			return nil, err
-		}
-		PTP_index := PNode.PTPoffset
+    // 获取分区（Partition）列表
+    partitions, _, _ := z.conn.Children(path)
+    for _, part := range partitions {
 
-		var max_dup DuplicateNode
-		max_dup.EndOffset = 0
-		blocks, _, _ := z.conn.Children(path + "/" + part)
-		for _, block := range blocks {
-			info, err := z.GetBlockNode(path + "/" + part + "/" + block)
-			if err != nil {
-				logger.DEBUG(logger.DError, "get block node fail%v/%v/%v\n", part, part, block)
-				continue
-			}
-			logger.DEBUG(logger.DLog, "the block is %v\n", info)
-			if info.StartOffset <= PTP_index && info.EndOffset >= PTP_index {
+        // 获取每个分区的节点信息
+        PNode, err := z.GetPartitionNode(path + "/" + part)
+        if err != nil {
+            // 如果获取失败，记录错误日志并返回错误
+            logger.DEBUG(logger.DError, "get PartitionNode fail %v/%v\n", path, part)
+            return nil, err
+        }
 
-				Duplicates, _, _ := z.conn.Children(path + "/" + part + "/" + info.Name)
-				for _, duplicate := range Duplicates {
+        // 获取该分区的 PTP 索引（点对点模式下的偏移量）
+        PTP_index := PNode.PTPoffset
 
-					duplicatenode, err := z.GetDuplicateNode(path + "/" + part + "/" + info.Name + "/" + duplicate)
-					if err != nil {
-						logger.DEBUG(logger.DError, "get dup node fail%v/%v/%v/%v\n", path, part, info.Name, duplicate)
-						continue
-					}
-					logger.DEBUG(logger.DLog, "the path of dup is %v node is %v\n", path + "/" + part + "/" + info.Name + "/" + duplicate, duplicatenode)
-					if max_dup.EndOffset == 0 || max_dup.EndOffset <= duplicatenode.EndOffset {
-						//保证broker在线
-						if z.CheckBroker(duplicatenode.BrokerName) {
-							max_dup = duplicatenode
-						}else{
-							logger.DEBUG(logger.DLog, "the broker %v is not online\n", duplicatenode.BrokerName)
-						}
-					}
-				}
-				logger.DEBUG(logger.DLog, "the max_dup is %v\n", max_dup)
-				var ret string
-				if max_dup.EndOffset != 0 {
-					ret = "OK"
-				} else {
-					ret = "thr brokers not online"
-				}
-				//一个partition只取endoffset最大的broker,其他小的broker副本不全面
-				broker, err := z.GetBrokerNode(max_dup.BrokerName)
-				if err != nil {
-					logger.DEBUG(logger.DError, "get broker node fail %v\n", max_dup.BlockName)
-					continue
-				}
-				Parts = append(Parts, Part{
-					Topic_name:    topic,
-					Part_name:     part,
-					BrokerName:    broker.Name,
-					BrokHost_Port: broker.BrokHostPort,
-					RaftHost_Port: broker.RaftHostPort,
-					PTP_index:     PTP_index,
-					File_name:     info.FileName,
-					Err:           ret,
-				})
-				break
-			}
-		}
-	}
+        // 初始化最大副本的变量，用于存储具有最大 EndOffset 的副本节点
+        var max_dup DuplicateNode
+        max_dup.EndOffset = 0
 
-	return Parts, nil
+        // 获取当前分区下的块（Block）列表
+        blocks, _, _ := z.conn.Children(path + "/" + part)
+        for _, block := range blocks {
+
+            // 获取块节点信息
+            info, err := z.GetBlockNode(path + "/" + part + "/" + block)
+            if err != nil {
+                // 如果获取失败，记录错误日志并跳过该块
+                logger.DEBUG(logger.DError, "get block node fail %v/%v/%v\n", part, part, block)
+                continue
+            }
+            logger.DEBUG(logger.DLog, "the block is %v\n", info)
+
+            // 检查块的偏移量范围是否覆盖 PTP 索引
+            if info.StartOffset <= PTP_index && info.EndOffset >= PTP_index {
+
+                // 获取该块的副本（Duplicate）列表
+                Duplicates, _, _ := z.conn.Children(path + "/" + part + "/" + info.Name)
+                for _, duplicate := range Duplicates {
+
+                    // 获取副本节点信息
+                    duplicatenode, err := z.GetDuplicateNode(path + "/" + part + "/" + info.Name + "/" + duplicate)
+                    if err != nil {
+                        // 如果获取失败，记录错误日志并跳过该副本
+                        logger.DEBUG(logger.DError, "get dup node fail %v/%v/%v/%v\n", path, part, info.Name, duplicate)
+                        continue
+                    }
+                    logger.DEBUG(logger.DLog, "the path of dup is %v node is %v\n", path + "/" + part + "/" + info.Name + "/" + duplicate, duplicatenode)
+
+                    // 选择 EndOffset 最大的副本
+                    if max_dup.EndOffset == 0 || max_dup.EndOffset <= duplicatenode.EndOffset {
+                        // 检查该副本对应的 broker 是否在线
+                        if z.CheckBroker(duplicatenode.BrokerName) {
+                            // 如果在线，将其作为 max_dup
+                            max_dup = duplicatenode
+                        } else {
+                            // 如果不在线，记录日志并跳过
+                            logger.DEBUG(logger.DLog, "the broker %v is not online\n", duplicatenode.BrokerName)
+                        }
+                    }
+                }
+                logger.DEBUG(logger.DLog, "the max_dup is %v\n", max_dup)
+
+                // 判断是否找到有效的副本
+                var ret string
+                if max_dup.EndOffset != 0 {
+                    ret = "OK"  // 找到有效副本
+                } else {
+                    ret = "the brokers not online"  // 无副本在线
+                }
+
+                // 获取最大 EndOffset 副本对应的 broker 节点信息
+                broker, err := z.GetBrokerNode(max_dup.BrokerName)
+                if err != nil {
+                    // 如果获取失败，记录错误日志并跳过
+                    logger.DEBUG(logger.DError, "get broker node fail %v\n", max_dup.BlockName)
+                    continue
+                }
+
+                // 将获取到的分区和 broker 信息添加到 Parts 列表中
+                Parts = append(Parts, Part{
+                    Topic_name:    topic,              // 主题名称
+                    Part_name:     part,               // 分区名称
+                    BrokerName:    broker.Name,        // Broker 名称
+                    BrokHost_Port: broker.BrokHostPort,// Broker 主机和端口
+                    RaftHost_Port: broker.RaftHostPort,// Raft 主机和端口
+                    PTP_index:     PTP_index,          // PTP 索引
+                    File_name:     info.FileName,      // 块文件名
+                    Err:           ret,                // 错误状态或 "OK"
+                })
+
+                // 由于已经找到最大 EndOffset 的副本，跳出块循环
+                break
+            }
+        }
+    }
+
+    // 返回分区和 broker 信息列表
+    return Parts, nil
 }
 
 func (z *ZK) GetBroker(topic, part string, offset int64) (parts []Part, err error) {

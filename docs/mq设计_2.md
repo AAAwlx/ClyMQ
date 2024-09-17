@@ -89,3 +89,34 @@ partition : consumer = 1 : n        //消费者多于分片数
 ### 再次连接
 
 在订阅Topic-Partition后会将订阅的内容存下来，当恢复连接时将重新请求Zookeeper并连接Broker；
+
+发起 Fetch 请求的时机：
+
+producer调用SetPartitionState功能设置主题和分区状态时会根据producer的请求信息中ack的值
+
+接收消息时 ack设置
+//若ack = -1,则为raft同步信息
+//若ack = 1, 则leader写入,	fetch获取信息
+//若ack = 0, 则立即返回,   	fetch获取信息
+
+功能：
+
+AddFetchHandle 用于处理 Fetch 请求，首先检查是否准备好接受信息。然后根据是否为 Leader Broker 进行不同的处理。如果是 Leader Broker，则为每个 follower broker 准备节点（PSB_PULL）。如果不是 Leader Broker，则连接到 Leader Broker 并从其拉取消息。
+流程：
+
+Leader Broker：
+
+检查是否已准备接受信息 (PrepareAcceptHandle)。
+如果是 Leader Broker，锁定读取操作，检查 topic 是否存在。
+准备每个 follower broker 的节点，并调用 PrepareSendHandle 函数进行准备。
+非 Leader Broker：
+
+稍等后处理请求（100 微秒）。
+连接到 Leader Broker（如果尚未连接）。
+更新 parts_fetch 记录。
+检查 topic 是否存在。
+调用 FetchMsg 从 Leader Broker 拉取消息。
+错误处理：
+
+如果在任何步骤中出现错误，会记录日志并返回错误信息。
+在处理请求时，确保 Leader Broker 和 topic 的有效性，避免无效操作。

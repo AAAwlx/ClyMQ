@@ -522,88 +522,124 @@ func (z *ZkServer) SetPartitionState(info Info_in) Info_out {
 	}
 }
 
+//这个函数 GetDupsFromConsist 的主要功能是通过一致性哈希算法为特定的主题和分区找到多个（通常是三个）重复节点（副本），并返回这些副本的相关信息以及它们所对应的 Broker 节点的网络信息。具体功能可以分解为以下几点
 func (z *ZkServer) GetDupsFromConsist(info Info_in) (Dups []zookeeper.DuplicateNode, data_brokers []byte) {
-	str := info.topic_name + info.part_name
-	Bro_dups := z.consistent.GetNode(str+"dup", 3)
-	// Bro_dup_2 := z.consistent.GetNode(str + "dup2")
-	// Bro_dup_3 := z.consistent.GetNode(str + "dup3")
-	Dups = append(Dups, zookeeper.DuplicateNode{
-		Name:          "dup_0",
-		TopicName:     info.topic_name,
-		PartitionName: info.part_name,
-		BrokerName:    Bro_dups[0],
-		StartOffset:   int64(0),
-		BlockName:     "NowBlock",
-	})
+    // 构造 topic 和 partition 的唯一标识字符串
+    str := info.topic_name + info.part_name
+    
+    // 从一致性哈希算法中获取3个重复节点对应的 broker 名称
+    Bro_dups := z.consistent.GetNode(str+"dup", 3)
 
-	Dups = append(Dups, zookeeper.DuplicateNode{
-		Name:          "dup_1",
-		TopicName:     info.topic_name,
-		PartitionName: info.part_name,
-		BrokerName:    Bro_dups[1],
-		StartOffset:   int64(0),
-		BlockName:     "NowBlock",
-	})
+    // 将第一个重复节点信息添加到 Dups 列表
+    Dups = append(Dups, zookeeper.DuplicateNode{
+        Name:          "dup_0",              // 重复节点的名称
+        TopicName:     info.topic_name,      // 主题名称
+        PartitionName: info.part_name,       // 分区名称
+        BrokerName:    Bro_dups[0],          // 第一个 broker 名称
+        StartOffset:   int64(0),             // 起始偏移量
+        BlockName:     "NowBlock",           // 当前块的名称
+    })
 
-	Dups = append(Dups, zookeeper.DuplicateNode{
-		Name:          "dup_2",
-		TopicName:     info.topic_name,
-		PartitionName: info.part_name,
-		BrokerName:    Bro_dups[2],
-		StartOffset:   int64(0),
-		BlockName:     "NowBlock",
-	})
+    // 将第二个重复节点信息添加到 Dups 列表
+    Dups = append(Dups, zookeeper.DuplicateNode{
+        Name:          "dup_1",              // 重复节点的名称
+        TopicName:     info.topic_name,      // 主题名称
+        PartitionName: info.part_name,       // 分区名称
+        BrokerName:    Bro_dups[1],          // 第二个 broker 名称
+        StartOffset:   int64(0),             // 起始偏移量
+        BlockName:     "NowBlock",           // 当前块的名称
+    })
 
-	for _, dup := range Dups {
-		err := z.zk.RegisterNode(dup)
-		if err != nil {
-			logger.DEBUG(logger.DError, "the err is %v\n", err.Error())
-		}
-	}
+    // 将第三个重复节点信息添加到 Dups 列表
+    Dups = append(Dups, zookeeper.DuplicateNode{
+        Name:          "dup_2",              // 重复节点的名称
+        TopicName:     info.topic_name,      // 主题名称
+        PartitionName: info.part_name,       // 分区名称
+        BrokerName:    Bro_dups[2],          // 第三个 broker 名称
+        StartOffset:   int64(0),             // 起始偏移量
+        BlockName:     "NowBlock",           // 当前块的名称
+    })
 
-	var brokers BrokerS
-	brokers.BroBrokers = make(map[string]string)
-	brokers.RafBrokers = make(map[string]string)
-	brokers.Me_Brokers = make(map[string]int)
-	for _, DupNode := range Dups {
-		BrokerNode, err := z.zk.GetBrokerNode(DupNode.BrokerName)
-		if err != nil {
-			logger.DEBUG(logger.DError, "%v\n", err.Error())
-		}
-		brokers.BroBrokers[DupNode.BrokerName] = BrokerNode.BrokHostPort
-		brokers.RafBrokers[DupNode.BrokerName] = BrokerNode.RaftHostPort
-		brokers.Me_Brokers[DupNode.BrokerName] = BrokerNode.Me
-	}
+    // 将每个重复节点注册到 ZooKeeper 中
+    for _, dup := range Dups {
+        err := z.zk.RegisterNode(dup)       // 注册节点
+        if err != nil {
+            logger.DEBUG(logger.DError, "the err is %v\n", err.Error())
+        }
+    }
 
-	data_brokers, err := json.Marshal(brokers)
-	if err != nil {
-		logger.DEBUG(logger.DError, "%v\n", err.Error())
-	}
+    // 初始化 BrokerS 结构体，用于存储 broker 信息
+    var brokers BrokerS
+    brokers.BroBrokers = make(map[string]string)  // 用于存储 Broker 的 HostPort
+    brokers.RafBrokers = make(map[string]string)  // 用于存储 Raft 的 HostPort
+    brokers.Me_Brokers = make(map[string]int)     // 用于存储 Broker 的 ID
 
-	return Dups, data_brokers
+    // 遍历所有重复节点，获取对应的 Broker 信息
+    for _, DupNode := range Dups {
+        BrokerNode, err := z.zk.GetBrokerNode(DupNode.BrokerName)  // 获取 Broker 信息
+        if err != nil {
+            logger.DEBUG(logger.DError, "%v\n", err.Error())
+        }
+        // 将 Broker 的信息存储到 brokers 结构体中
+        brokers.BroBrokers[DupNode.BrokerName] = BrokerNode.BrokHostPort
+        brokers.RafBrokers[DupNode.BrokerName] = BrokerNode.RaftHostPort
+        brokers.Me_Brokers[DupNode.BrokerName] = BrokerNode.Me
+    }
+
+    // 将 brokers 结构体序列化为 JSON 格式
+    data_brokers, err := json.Marshal(brokers)
+    if err != nil {
+        logger.DEBUG(logger.DError, "%v\n", err.Error())
+    }
+
+    // 返回重复节点列表和序列化后的 broker 数据
+    return Dups, data_brokers
 }
 
 func (z *ZkServer) CreateNowBlock(info Info_in) error {
-	block_node := zookeeper.BlockNode{
-		Name:          "NowBlock",
-		FileName:      info.topic_name + info.part_name + "now.txt",
-		TopicName:     info.topic_name,
-		PartitionName: info.part_name,
-		StartOffset:   int64(0),
-	}
-	return z.zk.RegisterNode(block_node)
+    // 创建一个新的 BlockNode（区块节点），将其命名为 "NowBlock"
+    // 该节点表示当前正在处理的区块（文件）信息
+
+    block_node := zookeeper.BlockNode{
+        // 设置区块名称为 "NowBlock"
+        Name: "NowBlock",
+        // 文件名是由主题名称和分区名称组合而成，并以 "now.txt" 结尾
+        FileName: info.topic_name + info.part_name + "now.txt",
+        // 主题名称
+        TopicName: info.topic_name,
+        // 分区名称
+        PartitionName: info.part_name,
+        // 起始偏移量为 0，表示从文件开始记录数据
+        StartOffset: int64(0),
+    }
+
+    // 将创建的 block_node 注册到 ZooKeeper 中
+    return z.zk.RegisterNode(block_node)
 }
 
+
 func (z *ZkServer) BecomeLeader(info Info_in) error {
+	// 记录日志，表明当前分区的新的 Leader Broker
 	logger.DEBUG(logger.DLeader, "partition(%v) new leader is %v\n", info.topic_name+info.part_name, info.cli_name)
+
+	// 构建当前分区 "NowBlock" 的 Zookeeper 路径
+	// "NowBlock" 是当前分区正在写入的块
 	now_block_path := z.zk.TopicRoot + "/" + info.topic_name + "/" + "Partitions" + "/" + info.part_name + "/" + "NowBlock"
+
+	// 从 Zookeeper 获取 "NowBlock" 节点的信息
 	NowBlock, err := z.zk.GetBlockNode(now_block_path)
 	if err != nil {
+		// 如果获取失败，记录错误日志
 		logger.DEBUG(logger.DError, "%v\n", err.Error())
 	}
+
+	// 将 "NowBlock" 的 Leader Broker 更新为新的 Leader Broker，即 info.cli_name
 	NowBlock.LeaderBroker = info.cli_name
+
+	// 更新 Zookeeper 中的 "NowBlock" 节点，保存新的 Leader Broker 信息
 	return z.zk.UpdateBlockNode(NowBlock)
 }
+
 
 func (z *ZkServer) SubHandle(info Info_in) error {
 	//在zookeeper上创建sub节点，若节点已经存在，则加入group中
@@ -663,56 +699,94 @@ func (z *ZkServer) HandStartGetBroker(info Info_in) (rets []byte, size int, err 
 	return data, size, nil
 }
 
-
+//该函数处理从多个 zookeeper 分区 (Parts) 中的元数据，并通过相应的 broker 客户端为每个分区发送准备请求。
 func (z *ZkServer) SendPreoare(Parts []zookeeper.Part, info Info_in) (partkeys []clients.PartKey) {
+	// 函数 SendPreoare 接收一个由 zookeeper 分区信息组成的切片 `Parts` 和输入信息 `info`。
+	// 返回值是包含分区键（`clients.PartKey`）的切片。
 
 	for _, part := range Parts {
-		if part.Err != OK { 
+		// 遍历每一个传入的分区 `part`。
+
+		if part.Err != OK {
+			// 如果当前分区的错误状态不是 OK，意味着该分区有错误。
 			logger.DEBUG(logger.DLog, "the part.ERR(%v) != OK the part is %v\n", part.Err, part)
+			// 将有错误的分区添加到 `partkeys` 返回值中，并设置相应的错误。
 			partkeys = append(partkeys, clients.PartKey{
 				Err: part.Err,
 			})
 			continue
+			// 跳过该分区，继续处理下一个分区。
 		}
+
 		z.mu.RLock()
+		// 读锁定，用于确保 `z.Brokers` 的并发读取操作安全。
+
 		bro_cli, ok := z.Brokers[part.BrokerName]
+		// 从 `z.Brokers` 中获取与当前分区对应的 broker 客户端，如果找不到，则 `ok` 为 false。
+
 		z.mu.RUnlock()
+		// 解锁，允许其他读取操作。
 
 		if !ok {
+			// 如果没有找到对应的 broker 客户端，则创建一个新的客户端。
+
 			bro_cli, err := server_operations.NewClient(z.Name, client.WithHostPorts(part.BrokHost_Port))
+			// 调用 `NewClient` 创建与指定主机端口的 broker 客户端连接。
+
 			if err != nil {
+				// 如果客户端创建失败，记录错误日志。
 				logger.DEBUG(logger.DError, "broker(%v) host_port(%v) con't connect %v", part.BrokerName, part.BrokHost_Port, err.Error())
 			}
+
 			z.mu.Lock()
+			// 写锁定，用于安全更新 `z.Brokers` 映射。
+
 			z.Brokers[part.BrokerName] = bro_cli
+			// 将新的 broker 客户端保存到 `z.Brokers` 映射中。
+
 			z.mu.Unlock()
+			// 解锁，允许其他写入或读取操作。
 		}
+
+		// 准备发送请求，构造 `PrepareSendRequest`。
 		rep := &api.PrepareSendRequest{
-			Consumer: info.cli_name,
-			TopicName: info.topic_name,
-			PartName:  part.Part_name,
-			FileName:  part.File_name,
-			Option:    info.option,
+			Consumer:  info.cli_name,  // 消费者名称。
+			TopicName: info.topic_name, // 主题名称。
+			PartName:  part.Part_name,  // 分区名称。
+			FileName:  part.File_name,  // 文件名称。
+			Option:    info.option,     // 选项（如 PTP 或 PSB）。
 		}
-		if rep.Option == TOPIC_NIL_PTP_PULL || rep.Option == TOPIC_NIL_PTP_PUSH { //ptp
+
+		// 设置偏移量，基于不同的选项类型（PTP 或 PSB）。
+		if rep.Option == TOPIC_NIL_PTP_PULL || rep.Option == TOPIC_NIL_PTP_PUSH {
+			// 如果是 PTP 模式，使用 `part.PTP_index` 设置偏移量。
 			rep.Offset = part.PTP_index
-		} else if rep.Option == TOPIC_KEY_PSB_PULL || rep.Option == TOPIC_KEY_PSB_PUSH { //psb
+		} else if rep.Option == TOPIC_KEY_PSB_PULL || rep.Option == TOPIC_KEY_PSB_PUSH {
+			// 如果是 PSB 模式，使用 `info.index` 设置偏移量。
 			rep.Offset = info.index
 		}
+
+		// 调用 broker 客户端的 `PrepareSend` 方法，发送准备请求。
 		resp, err := bro_cli.PrepareSend(context.Background(), rep)
 		if err != nil || !resp.Ret {
+			// 如果调用出现错误，或者返回值 `Ret` 为 false，则记录错误。
 			logger.DEBUG(logger.DError, "PrepareSend error %v", err.Error())
 		}
+
+		// 记录日志，表示当前分区的处理已经完成。
 		logger.DEBUG(logger.DLog, "the part is %v\n", part)
+
+		// 将处理完的分区键（`clients.PartKey`）添加到 `partkeys` 返回值切片中。
 		partkeys = append(partkeys, clients.PartKey{
-			Name:        part.Part_name,
-			Broker_name: part.BrokerName,
-			Broker_H_P:  part.BrokHost_Port,
-			Offset:      part.PTP_index,
-			Err:         OK,
+			Name:        part.Part_name,     // 分区名称。
+			Broker_name: part.BrokerName,    // broker 名称。
+			Broker_H_P:  part.BrokHost_Port, // broker 的主机和端口信息。
+			Offset:      part.PTP_index,     // PTP 模式的偏移量。
+			Err:         OK,                 // 错误状态（如果处理成功，则为 OK）。
 		})
 	}
 
+	// 返回构建好的分区键列表 `partkeys`。
 	return partkeys
 }
 
@@ -736,36 +810,51 @@ func (z *ZkServer) UpdatePTPOffset(info Info_in) error {
 	return err
 }
 
+//UpdateDupNode 函数用于更新指定分区和块的副本节点（DuplicateNode）以及块节点（BlockNode）的偏移量信息
 func (z *ZkServer) UpdateDupNode(info Info_in) error {
-	str := z.zk.TopicRoot + "/" + info.topic_name + "/" + "Partitions" + "/" + info.part_name + "/" + info.blockname
-	// if info.leader {
-	BlockNode, err := z.zk.GetBlockNode(str)
-	if err != nil {
-		logger.DEBUG(logger.DError, "%v\n", err.Error())
-		return err
-	}
-	if info.index > BlockNode.EndOffset {
-		BlockNode.EndOffset = info.index
-		err = z.zk.RegisterNode(BlockNode)
-		if err != nil {
-			logger.DEBUG(logger.DError, "%v\n", err.Error())
-			return err
-		}
-	}
-	// }
-	DupNode, err := z.zk.GetDuplicateNode(str + "/" + info.cli_name)
-	if err != nil {
-		logger.DEBUG(logger.DError, "%v\n", err.Error())
-		return err
-	}
-	DupNode.EndOffset = info.index
-	err = z.zk.RegisterNode(DupNode)
-	if err != nil {
-		logger.DEBUG(logger.DError, "%v\n", err.Error())
-		return err
-	}
-	return nil
+    // 构造路径，指向当前的块节点所在的 ZooKeeper 路径
+    str := z.zk.TopicRoot + "/" + info.topic_name + "/" + "Partitions" + "/" + info.part_name + "/" + info.blockname
+
+    // 获取指定路径上的 BlockNode（块节点）
+    BlockNode, err := z.zk.GetBlockNode(str)
+    if err != nil {
+        // 如果获取 BlockNode 失败，记录错误日志并返回错误
+        logger.DEBUG(logger.DError, "%v\n", err.Error())
+        return err
+    }
+
+    // 如果传入的索引大于当前块的结束偏移量，则更新 BlockNode 的 EndOffset
+    if info.index > BlockNode.EndOffset {
+        BlockNode.EndOffset = info.index
+        // 重新注册更新后的 BlockNode 到 ZooKeeper
+        err = z.zk.RegisterNode(BlockNode)
+        if err != nil {
+            logger.DEBUG(logger.DError, "%v\n", err.Error())
+            return err
+        }
+    }
+
+    // 获取对应的 DuplicateNode（副本节点），路径为块节点路径 + 客户端名称
+    DupNode, err := z.zk.GetDuplicateNode(str + "/" + info.cli_name)
+    if err != nil {
+        // 如果获取 DuplicateNode 失败，记录错误日志并返回错误
+        logger.DEBUG(logger.DError, "%v\n", err.Error())
+        return err
+    }
+
+    // 更新 DuplicateNode 的 EndOffset 为传入的索引值
+    DupNode.EndOffset = info.index
+    // 将更新后的 DuplicateNode 注册到 ZooKeeper
+    err = z.zk.RegisterNode(DupNode)
+    if err != nil {
+        logger.DEBUG(logger.DError, "%v\n", err.Error())
+        return err
+    }
+
+    // 成功更新节点后返回 nil 表示无错误
+    return nil
 }
+
 
 func GetPartKeys(Parts []zookeeper.Part) (partkeys []clients.PartKey) {
 	for _, part := range Parts {

@@ -25,7 +25,7 @@ type Consumer struct {
 	srv      server.Server
 	port     string
 	zkBroker zkserver_operations.Client//zookeeper对应的rpc客户端
-	Brokers  map[string]*server_operations.Client //broker_name与其对应的rpc客户端
+	Brokers  map[string]*server_operations.Client //broker_name与其对应的rpc客户端，服务端集群
 	// PTP_Topics 	map[string]
 	// Topic_Partions map[string]Info
 }

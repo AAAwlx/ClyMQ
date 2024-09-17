@@ -24,23 +24,24 @@ const (
 )
 
 type Server struct {
-	Name     string
-	me       int
-	zk       *zookeeper.ZK
-	zkclient zkserver_operations.Client
-	mu       sync.RWMutex
+	Name     string   // 服务器的名称
+	me       int      // 当前服务器的唯一标识符
+	zk       *zookeeper.ZK   // ZooKeeper 客户端，用于分布式协调
+	zkclient zkserver_operations.Client // ZooKeeper 客户端的具体操作封装
 
-	aplych    chan info
-	topics    map[string]*Topic
-	consumers map[string]*Client
-	brokers   map[string]*raft_operations.Client
+	mu       sync.RWMutex   // 读写锁，保护共享数据的并发访问
 
-	//raft
-	parts_rafts *parts_raft
+	aplych    chan info   // 通道，用于传递信息（如日志条目或命令应用）
+	topics    map[string]*Topic   // 存储服务器上的主题映射，键是主题名，值是 `Topic` 结构
+	consumers map[string]*Client  // 消费者的映射，键是消费者名，值是 `Client` 结构
+	brokers   map[string]*raft_operations.Client // broker 客户端的映射，键是 broker 名称，值是 Raft 客户端对象
 
-	//fetch
-	parts_fetch   map[string]string                    //topicName + partitionName to broker HostPort
-	brokers_fetch map[string]*server_operations.Client //brokerName to Client
+	// raft
+	parts_rafts *parts_raft   // Raft 实例的集合，用于处理分区和一致性协议
+
+	// fetch
+	parts_fetch   map[string]string                    // topic + 分区名称映射到 broker 的 HostPort，决定哪个 broker 提供该分区的服务
+	brokers_fetch map[string]*server_operations.Client // broker 名称映射到 broker 客户端，用于与其他 broker 进行通信
 }
 
 type Key struct {
@@ -411,70 +412,89 @@ func (s *Server) CloseRaftHandle(in info) (ret string, err error) {
 }
 
 func (s *Server) AddFetchHandle(in info) (ret string, err error) {
-	//检测该Partition的fetch机制是否已经启动
-
-	//检查该topic_partition 是否准备昊accept信息
+	// 检测该Partition的fetch机制是否已经启动，是否可以接受信息
+	// 调用 PrepareAcceptHandle 函数，检查该分区是否准备好接收信息
 	ret, err = s.PrepareAcceptHandle(in)
 	if err != nil {
+		// 如果检查失败，记录日志并返回错误
 		logger.DEBUG(logger.DError, "%v err is %v\n", ret, err)
 		return ret, err
 	}
 
+	// 如果当前服务器是该分区的Leader Broker
 	if in.LeaderBroker == s.Name {
-		//Leader Broker将准备好接收follower的Pull请求
+		// Leader Broker将准备好接收follower的Pull请求
+		// 加锁读取当前服务器的主题信息
 		s.mu.RLock()
 		defer s.mu.RUnlock()
 		topic, ok := s.topics[in.topic_name]
 		if !ok {
+			// 如果没有找到该主题，返回错误信息
 			ret = "this topic is not in this broker"
 			logger.DEBUG(logger.DError, "%v, info(%v)\n", ret, in)
 			return ret, errors.New(ret)
 		}
+		// 记录日志，表明当前服务器准备好为follower brokers发送消息
 		logger.DEBUG(logger.DLog, "%v prepare send for follower brokers\n", s.Name)
-		//给每个follower broker准备node（PSB_PULL），等待pull请求
+
+		// 遍历所有的follower brokers，为每个follower broker准备一个拉取请求
 		for BrokerName := range in.brokers {
 			ret, err = topic.PrepareSendHandle(info{
 				topic_name: in.topic_name,
 				part_name:  in.part_name,
 				file_name:  in.file_name,
 				consumer:   BrokerName,
-				option:     TOPIC_KEY_PSB_PULL, //PSB_PULL
+				option:     TOPIC_KEY_PSB_PULL, // PSB_PULL 表示拉取请求的操作
 			}, &s.zkclient)
 			if err != nil {
+				// 如果发生错误，记录日志
 				logger.DEBUG(logger.DError, "%v\n", err.Error())
 			}
 		}
+		// 返回结果
 		return ret, err
 	} else {
-
+		// 当前服务器不是Leader Broker，而是Follower Broker
+		// 稍作延迟，避免高频请求
 		time.Sleep(time.Microsecond * 100)
 
+		// 构造唯一标识符，用于存储分区的fetch状态
 		str := in.topic_name + in.part_name + in.file_name
 		s.mu.Lock()
+		// 检查是否已经存在Leader Broker的连接
 		broker, ok := s.brokers_fetch[in.LeaderBroker]
 		if !ok {
+			// 如果没有连接，尝试连接Leader Broker
 			logger.DEBUG(logger.DLog, "%v connection the leader broker %v the HP(%v)\n", s.Name, in.LeaderBroker, in.HostPort)
 			bro_ptr, err := server_operations.NewClient(s.Name, client.WithHostPorts(in.HostPort))
 			if err != nil {
+				// 如果连接失败，记录日志并返回错误
 				logger.DEBUG(logger.DError, "%v\n", err.Error())
 				return err.Error(), err
 			}
+			// 保存连接
 			s.brokers_fetch[in.LeaderBroker] = &bro_ptr
 			broker = &bro_ptr
 		}
 
+		// 检查该分区是否已经启动fetch机制
 		_, ok = s.parts_fetch[str]
 		if !ok {
+			// 如果没有启动，将其标记为正在从Leader Broker拉取
 			s.parts_fetch[str] = in.LeaderBroker
 		}
+		// 获取主题信息
 		topic, ok := s.topics[in.topic_name]
 		if !ok {
+			// 如果没有找到该主题，返回错误信息
 			ret = "this topic is not in this broker"
 			logger.DEBUG(logger.DError, "%v, info(%v)\n", ret, in)
 			return ret, errors.New(ret)
 		}
+		// 释放锁
 		s.mu.Unlock()
 
+		// 调用 FetchMsg 函数，从Leader Broker拉取消息
 		return s.FetchMsg(in, broker, topic)
 	}
 }

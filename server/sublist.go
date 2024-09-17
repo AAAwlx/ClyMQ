@@ -109,7 +109,7 @@ func (t *Topic) CloseAcceptPart(in info) (start, end int64, ret string, err erro
 }
 
 func (t *Topic) PrepareSendHandle(in info, zkclient *zkserver_operations.Client) (ret string, err error) {
-	sub_name := GetStringfromSub(in.topic_name, in.part_name, in.option)
+	sub_name := GetStringfromSub(in.topic_name, in.part_name, in.option)//该字符串是用于标识不同的订阅或发布模式
 
 	t.rmu.Lock()
 	//检查或创建partition
