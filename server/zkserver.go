@@ -230,31 +230,43 @@ func (z *ZkServer) SetPartitionState(info Info_in) Info_out {
 	var ret string
 	var data_brokers []byte
 	var Dups []zookeeper.DuplicateNode
-	node, err := z.zk.GetPartState(info.topic_name, info.part_name)
+	node, err := z.zk.GetPartState(info.topic_name, info.part_name)//获取分区状态
 	if err != nil {
 		logger.DEBUG(logger.DError, "%v\n", err.Error())
 		return Info_out{
 			Err: err,
 		}
 	}
-
-	if info.option != node.Option {
-		index, err := z.zk.GetPartBlockIndex(info.topic_name, info.part_name)
-		if err != nil {
-			logger.DEBUG(logger.DError, "%v\n", err.Error())
-			return Info_out{
-				Err: err,
-			}
+// 如果传入的 info.option 与当前节点的 Option 不匹配，更新 Zookeeper 中的分区信息
+// info: 包含分区信息和更新选项的结构体
+if info.option != node.Option {
+	// 从 Zookeeper 获取分区块的索引
+	index, err := z.zk.GetPartBlockIndex(info.topic_name, info.part_name)
+	if err != nil {
+		// 如果获取索引失败，记录错误信息并返回错误结果
+		logger.DEBUG(logger.DError, "%v\n", err.Error())
+		return Info_out{
+			Err: err,
 		}
-		z.zk.UpdatePartitionNode(zookeeper.PartitionNode{
-			TopicName: info.topic_name,
-			Name:      info.part_name,
-			Index:     index,
-			Option:    info.option,
-			PTPoffset: node.PTPoffset,
-			DupNum:    info.dupnum, //需要下面的程序确认，是否能分配一定数量的副本
-		})
 	}
+	
+	// 更新 Zookeeper 中的分区节点信息
+	err = z.zk.UpdatePartitionNode(zookeeper.PartitionNode{
+		TopicName: info.topic_name,    // 主题名称
+		Name:      info.part_name,      // 分区名称
+		Index:     index,               // 分区块的索引
+		Option:    info.option,         // 新的选项
+		PTPoffset: node.PTPoffset,      // PTP 偏移量
+		DupNum:    info.dupnum,         // 副本数量，需确认是否可以分配一定数量的副本
+	})
+	if err != nil {
+		// 如果更新失败，记录错误信息并返回错误结果
+		logger.DEBUG(logger.DError, "%v\n", err.Error())
+		return Info_out{
+			Err: err,
+		}
+	}
+}
 
 	logger.DEBUG(logger.DLog, "this partition(%v) status is %v\n", node.Name, node.Option)
 

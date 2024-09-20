@@ -350,67 +350,89 @@ func (p *parts_raft) CheckSnap() {
 
 func (p *parts_raft) StartServer() {
 
+	// 输出启动日志，记录当前节点启动的信息
 	logger.DEBUG_RAFT(logger.DSnap, "S%d parts_raft start\n", p.me)
 
-	// logger.LOGinit()
-
+	// 启动一个新的 goroutine，执行主循环
 	go func() {
 
 		for {
+			// 如果当前节点没有被停止
 			if !p.killed() {
 				select {
+				// 监听 applyCh 通道，处理提交的日志条目
 				case m := <-p.applyCh:
 
+					// 如果接收到的消息表明当前节点成为了领导者
 					if m.BeLeader {
 						str := m.TopicName + m.PartName
+						// 输出日志，记录成为领导者的信息
 						logger.DEBUG_RAFT(logger.DLog, "S%d Broker tPart(%v) become leader aply from %v to %v\n", p.me, str, p.applyindexs[str], m.CommandIndex)
+						// 更新应用的索引
 						p.applyindexs[str] = m.CommandIndex
+						// 如果领导者是当前节点
 						if m.Leader == p.me {
+							// 向 appench 通道发送信息，表明当前节点是领导者
 							p.appench <- info{
 								producer:   "Leader",
 								topic_name: m.TopicName,
 								part_name:  m.PartName,
 							}
 						}
+					// 如果消息是有效的命令且当前节点不是领导者
 					} else if m.CommandValid && !m.BeLeader {
+						// 记录当前时间
 						start := time.Now()
 
+						// 输出日志，尝试获取锁
 						logger.DEBUG_RAFT(logger.DLog, "S%d try lock 847\n", p.me)
+						// 获取锁
 						p.mu.Lock()
+						// 输出日志，成功获取锁
 						logger.DEBUG_RAFT(logger.DLog, "S%d success lock 847\n", p.me)
+						// 计算获取锁的耗时
 						ti := time.Since(start).Milliseconds()
+						// 输出锁获取耗时的日志
 						logger.DEBUG_RAFT(logger.DLog2, "S%d AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA%d\n", p.me, ti)
 
+						// 获取消息中的操作命令
 						O := m.Command
 
+						// 检查 CDM（客户端消息字典）中是否有该分区（Tpart），如果没有则创建
 						_, ok := p.CDM[O.Tpart]
 						if !ok {
 							logger.DEBUG_RAFT(logger.DLog, "S%d make CDM Tpart(%v)\n", p.me, O.Tpart)
 							p.CDM[O.Tpart] = make(map[string]int64)
-							// if O.Cli_name != "TIMEOUT" {
-							// 	p.CDM[]
-							// }
 						}
+						// 检查 CSM（客户端状态字典）中是否有该分区（Tpart），如果没有则创建
 						_, ok = p.CSM[O.Tpart]
 						if !ok {
 							logger.DEBUG_RAFT(logger.DLog, "S%d make CSM Tpart(%v)\n", p.me, O.Tpart)
 							p.CSM[O.Tpart] = make(map[string]int64)
 						}
 
+						// 输出日志，记录当前处理的命令和索引状态
 						logger.DEBUG_RAFT(logger.DLog, "S%d TTT CommandValid(%v) applyindex[%v](%v) CommandIndex(%v) CDM[C%v][%v](%v) O.Cmd_index(%v) from(%v)\n", p.me, m.CommandValid, O.Tpart, p.applyindexs[O.Tpart], m.CommandIndex, O.Tpart, O.Cli_name, p.CDM[O.Tpart][O.Cli_name], O.Cmd_index, O.Ser_index)
 
+						// 如果当前应用的索引加一等于命令的索引，表明可以应用该命令
 						if p.applyindexs[O.Tpart]+1 == m.CommandIndex {
 
+							// 如果客户端名称为 "TIMEOUT"
 							if O.Cli_name == "TIMEOUT" {
+								// 输出日志并更新应用索引
 								logger.DEBUG_RAFT(logger.DLog, "S%d for TIMEOUT update applyindex %v to %v\n", p.me, p.applyindexs[O.Tpart], m.CommandIndex)
 								p.applyindexs[O.Tpart] = m.CommandIndex
+							// 否则，如果 CDM 中存储的命令索引小于当前命令的索引，表明是新命令
 							} else if p.CDM[O.Tpart][O.Cli_name] < O.Cmd_index {
+								// 输出日志并更新 CDM 和应用索引
 								logger.DEBUG_RAFT(logger.DLeader, "S%d get message update CDM[%v][%v] from %v to %v update applyindex %v to %v\n", p.me, O.Tpart, O.Cli_name, p.CDM[O.Tpart][O.Cli_name], O.Cmd_index, p.applyindexs[O.Tpart], m.CommandIndex)
 								p.applyindexs[O.Tpart] = m.CommandIndex
 
+								// 更新 CDM 字典中的命令索引
 								p.CDM[O.Tpart][O.Cli_name] = O.Cmd_index
+								// 如果操作类型为 "Append"
 								if O.Operate == "Append" {
-
+									// 将消息发送到 appench 通道
 									p.appench <- info{
 										producer:   O.Cli_name,
 										message:    O.Msg,
@@ -419,63 +441,68 @@ func (p *parts_raft) StartServer() {
 										size:       O.Size,
 									}
 
+									// 尝试将命令索引发送到 Add 通道
 									select {
 									case p.Add <- COMD{index: m.CommandIndex}:
-										// logger.DEBUG_RAFT(logger.DLog, "S%d write putAdd in(%v)\n", kv.me, kv.gid, m.CommandIndex)
+										// 成功发送到 Add 通道的情况
 									default:
-										// logger.DEBUG_RAFT(logger.DLog, "S%d can not write putAdd in(%v)\n", kv.me, kv.gid, m.CommandIndex)
+										// 无法发送到 Add 通道的情况
 									}
 								}
+							// 否则，命令已经执行过
 							} else if p.CDM[O.Tpart][O.Cli_name] == O.Cmd_index {
+								// 输出日志，表明命令已经执行过
 								logger.DEBUG_RAFT(logger.DLog2, "S%d this cmd had done, the log had two update applyindex %v to %v\n", p.me, p.applyindexs[O.Tpart], m.CommandIndex)
 								p.applyindexs[O.Tpart] = m.CommandIndex
+							// 否则，当前命令的索引小于 CDM 中的索引
 							} else {
+								// 输出日志，表明该命令的索引小于已经应用的命令
 								logger.DEBUG_RAFT(logger.DLog2, "S%d the topic_partition(%v) producer(%v) OIndex(%v) < CDM(%v)\n", p.me, O.Tpart, O.Cli_name, O.Cmd_index, p.CDM[O.Tpart][O.Cli_name])
 								p.applyindexs[O.Tpart] = m.CommandIndex
 							}
 
+						// 如果应用索引与命令索引之间有跳跃
 						} else if p.applyindexs[O.Tpart]+1 < m.CommandIndex {
+							// 输出警告日志，记录不连续的应用索引和命令索引
 							logger.DEBUG_RAFT(logger.DWarn, "S%d the applyindex + 1 (%v) < commandindex(%v)\n", p.me, p.applyindexs[O.Tpart], m.CommandIndex)
-							// kv.applyindex = m.CommandIndex
 						}
 
+						// 如果最大 Raft 状态大小有限制，检查是否需要快照
 						if p.maxraftstate > 0 {
 							p.CheckSnap()
 						}
 
+						// 释放锁
 						p.mu.Unlock()
 						logger.DEBUG_RAFT(logger.DLog, "S%d Unlock 1369\n", p.me)
 
-						// if maxraftstate > 0 {
-						// 	go kv.CheckSnap()
-						// }
-
-					} else { //read snapshot
+					} else { // 处理快照的情况
+						// 从快照数据中恢复状态
 						r := bytes.NewBuffer(m.Snapshot)
 						d := raft.NewDecoder(r)
 						logger.DEBUG_RAFT(logger.DSnap, "S%d the snapshot applied\n", p.me)
 						var S SnapShot
 						p.mu.Lock()
 						logger.DEBUG_RAFT(logger.DLog, "S%d lock 1029\n", p.me)
+						// 解码快照数据，如果解码失败则输出日志并解锁
 						if d.Decode(&S) != nil {
 							p.mu.Unlock()
 							logger.DEBUG_RAFT(logger.DLog, "S%d Unlock 1384\n", p.me)
 							logger.DEBUG_RAFT(logger.DSnap, "S%d labgob fail\n", p.me)
 						} else {
+							// 使用快照数据恢复 CDM、CSM 和应用索引
 							p.CDM[S.Tpart] = S.Cdm
 							p.CSM[S.Tpart] = S.Csm
-							// kv.config = S.Config
-							// kv.rpcindex = S.Rpcindex
-							// kv.check = false
 							logger.DEBUG_RAFT(logger.DSnap, "S%d recover by SnapShot update applyindex(%v) to %v\n", p.me, p.applyindexs[S.Tpart], S.Apliedindex)
 							p.applyindexs[S.Tpart] = S.Apliedindex
 							p.mu.Unlock()
 							logger.DEBUG_RAFT(logger.DLog, "S%d Unlock 1397\n", p.me)
 						}
-
 					}
 
+				// 如果没有收到消息，设置超时
 				case <-time.After(TIMEOUT * time.Microsecond):
+					// 构造一个超时操作并执行
 					O := raft.Op{
 						Ser_index: int64(p.me),
 						Cli_name:  "TIMEOUT",
@@ -484,6 +511,7 @@ func (p *parts_raft) StartServer() {
 					}
 					logger.DEBUG_RAFT(logger.DLog, "S%d have log time applied\n", p.me)
 					p.mu.RLock()
+					// 遍历分区，启动超时操作
 					for str, raft := range p.Partitions {
 						O.Tpart = str
 						raft.Start(O, false, 0)
@@ -495,6 +523,7 @@ func (p *parts_raft) StartServer() {
 
 	}()
 }
+
 
 //检查或创建一个raft
 //添加一个需要raft同步的partition

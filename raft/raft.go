@@ -161,117 +161,165 @@ type SnapShotReply struct {
 	Term int
 }
 
+// Make 函数用于初始化 Raft 实例并启动核心组件
+// peers: Raft 集群中的其他节点
+// me: 当前节点的 ID
+// persister: 用于保存和恢复 Raft 状态的持久化对象
+// applyCh: 用于向上层服务发送应用消息的通道
+// topic_name, part_name: 当前节点处理的主题和分区名称
 func Make(peers []*raft_operations.Client, me int,
 	persister *Persister, applyCh chan ApplyMsg, topic_name, part_name string) *Raft {
+    
+    // 创建 Raft 实例并初始化基本字段
 	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-	rf.votedFor = -1
-	rf.leaderId = -1
-	rf.currentTerm = 0
-	rf.electionElapsed = 0
-	rf.mu = sync.Mutex{}
-	rf.topic_name = topic_name
-	rf.part_name = part_name
-	rand.Seed(time.Now().UnixNano())
-	rf.electionRandomTimeout = rand.Intn(200) + 300
-	rf.state = 0
-	// rf.cond = sync.NewCond(&rf.mu)
-	rf.log = []LogNode{}
-	rf.X = 0
+	rf.peers = peers                           // 集群中的所有节点
+	rf.persister = persister                   // 持久化对象，用于保存和恢复 Raft 状态
+	rf.me = me                                 // 当前节点的 ID
+	rf.votedFor = -1                           // 表示当前节点未投票
+	rf.leaderId = -1                           // 初始化 Leader ID 为 -1
+	rf.currentTerm = 0                         // 当前节点的任期初始化为 0
+	rf.electionElapsed = 0                     // 选举超时计数器，初始为 0
+	rf.mu = sync.Mutex{}                       // 互斥锁，保护并发操作
+	rf.topic_name = topic_name                 // 当前节点处理的主题名称
+	rf.part_name = part_name                   // 当前节点处理的分区名称
 
+	// 设置随机种子，确保选举超时时间不同
+	rand.Seed(time.Now().UnixNano())
+
+	// 随机生成选举超时时间，介于 300-500 毫秒之间
+	rf.electionRandomTimeout = rand.Intn(200) + 300
+
+	rf.state = 0                               // 初始化为 Follower 状态
+	// rf.cond = sync.NewCond(&rf.mu)            // 可选条件变量（暂时注释掉）
+	rf.log = []LogNode{}                       // 初始化日志数组
+	rf.X = 0                                   // X 表示快照截断的日志索引
+
+	// 将初始日志条目 (任期为 0) 加入日志数组
 	rf.log = append(rf.log, LogNode{
 		Logterm: 0,
 	})
 
+	// 初始化每个节点的 nextIndex 和 matchIndex
 	for i := 0; i < len(peers); i++ {
-		rf.nextIndex = append(rf.nextIndex, 1)
-		rf.matchIndex = append(rf.matchIndex, 0)
+		rf.nextIndex = append(rf.nextIndex, 1)  // 下一个要发送给每个节点的日志索引
+		rf.matchIndex = append(rf.matchIndex, 0) // 每个节点已知的匹配日志索引
 	}
 
-	rf.commitIndex = 0
-	rf.lastApplied = 0
-	rf.tindex = 0
-	startindex := rf.X
+	// 初始化 Raft 的提交索引和应用索引
+	rf.commitIndex = 0    // 已提交的最大日志索引
+	rf.lastApplied = 0    // 已应用的最大日志索引
+	rf.tindex = 0         // 用于跟踪投票的索引
+	startindex := rf.X    // 起始日志索引
 
+	// 启动日志提交的后台协程
 	go rf.Commited(startindex, applyCh)
 
+	// 初始化日志系统，可能是 Raft 的调试和日志记录模块
 	LOGinit()
 
-	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot()) //快照
+	// 恢复持久化的 Raft 状态和快照
+	rf.readPersist(persister.ReadRaftState(), persister.ReadSnapshot())
 
+	// 启动 Raft 心跳检测或选举超时的计时器
 	go rf.ticker()
 
+	// 返回初始化好的 Raft 实例
 	return rf
 }
 
+// Commited 函数用于从指定的 startindex 开始，
+// 将 Raft 日志应用到状态机，并通过 applyCh 通道将日志传递出去。
 func (rf *Raft) Commited(startindex int, applyCh chan ApplyMsg) {
-	rf.mu.Lock()
 
+    // 加锁获取 Raft 节点的状态
+	rf.mu.Lock()
 	DEBUG(dLog2, "S%d i = 1 MMMMMMMMMMMMMMMM\n", rf.me)
 	rf.mu.Unlock()
 
+    // 主循环，持续检查并应用提交的日志，直到节点被杀死
 	for !rf.killed() {
 
+        // 再次加锁检查日志的状态
 		rf.mu.Lock()
+
+        // 如果存在快照且需要应用快照
 		if len(rf.log) > 0 && startindex < rf.X {
+            // 创建一个快照应用消息
 			node := ApplyMsg{
-				CommandValid:  false,
-				SnapshotValid: true,
-				Snapshot:      rf.snapshot,
-				SnapshotTerm:  rf.lastTerm,
-				SnapshotIndex: rf.lastIndex,
+				CommandValid:  false,           // 此处表示不应用命令，而是应用快照
+				SnapshotValid: true,            // 表示应用的是快照
+				Snapshot:      rf.snapshot,     // 当前的快照数据
+				SnapshotTerm:  rf.lastTerm,     // 快照的任期号
+				SnapshotIndex: rf.lastIndex,    // 快照的索引号
 			}
 			DEBUG(dLog2, "S%d snapshot to applymsg lastindex(%d)\n", rf.me, node.SnapshotIndex)
-			startindex = rf.X
-			rf.lastApplied = rf.lastIndex
+			startindex = rf.X                // 更新 startindex
+			rf.lastApplied = rf.lastIndex     // 更新最后应用的日志索引
 
 			rf.mu.Unlock()
 
+            // 将快照信息发送到 applyCh 通道
 			applyCh <- node
 		} else {
 			rf.mu.Unlock()
 		}
 
+        // 锁定后获取 commitIndex 和 lastApplied 的差异，准备应用日志
 		rf.mu.Lock()
 		var arry []LogNode
-		commit := rf.commitIndex - rf.X
-		applied := rf.lastApplied - rf.X
+		commit := rf.commitIndex - rf.X    // 计算需要提交的日志索引
+		applied := rf.lastApplied - rf.X   // 计算最后应用的日志索引
 
 		DEBUG(dCommit, "S%d commit(%d) applied(%d) lenlog(%d) rf.X(%d)\n", rf.me, commit, applied, len(rf.log)-1, rf.X)
+        
+        // 如果 commitIndex 大于 lastApplied 且索引合法，获取未应用的日志条目
 		if commit > applied && applied >= 0 && commit <= len(rf.log)-1 {
-			arry = rf.log[applied+1 : commit+1]
+			arry = rf.log[applied+1 : commit+1]  // 获取待应用的日志条目
 		}
 		rf.mu.Unlock()
+
+        // 如果有未应用的日志，逐个应用日志条目
 		if commit > applied {
 			for _, it := range arry {
 
+                // 创建一个命令应用消息
 				node := ApplyMsg{
-					CommandValid: true,
-					CommandIndex: it.LogIndex,
-					Command:      it.Log,
-					BeLeader:     it.BeLeader,
+					CommandValid: true,            // 此处表示应用的是命令
+					CommandIndex: it.LogIndex,      // 日志条目的索引
+					Command:      it.Log,           // 日志的具体命令
+					BeLeader:     it.BeLeader,      // 是否为 Leader
 				}
+
+                // 如果日志条目来自 Leader，附加 Leader 的相关信息
 				if node.BeLeader {
-					node.TopicName = rf.topic_name
-					node.PartName = rf.part_name
-					node.Leader   = it.Leader
+					node.TopicName = rf.topic_name  // 设置 topic 名称
+					node.PartName = rf.part_name    // 设置 partition 名称
+					node.Leader   = it.Leader       // 设置 Leader 节点信息
 					DEBUG(dLeader, "S%d apply beleader\n", rf.me)
 				}
-				DEBUG(dLog, "S%d lastapp lognode = %v\n", rf.me, node)
-				rf.mu.Lock()
 
+                // 输出调试信息，打印当前应用的日志条目
+				DEBUG(dLog, "S%d lastapp lognode = %v\n", rf.me, node)
+
+                // 锁定并更新 lastApplied，表示该条日志已被应用
+				rf.mu.Lock()
 				rf.lastApplied++
 				DEBUG(dLog, "S%d comm(%d) last(%d)\n", rf.me, commit, rf.lastApplied)
 				rf.mu.Unlock()
+
+                // 将日志条目发送到 applyCh 通道
 				applyCh <- node
 			}
+
+            // 持久化日志状态
 			go rf.persist()
 		}
 
+        // 等待 20 毫秒后再继续检查新的日志
 		time.Sleep(time.Millisecond * 20)
 	}
+
+    // 输出调试信息，表示该 Raft 节点已经被杀死
 	DEBUG(dError, "S%d the commit be killed\n", rf.me)
 }
 
